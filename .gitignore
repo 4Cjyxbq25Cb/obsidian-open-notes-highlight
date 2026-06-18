@@ -1,0 +1,3 @@
+# Keep main.js (no build step — shipped directly)
+node_modules/
+.DS_Store

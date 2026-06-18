@@ -1,0 +1,10 @@
+{
+  "id": "open-notes-graph-highlight",
+  "name": "Open Notes Graph Highlight",
+  "version": "1.0.0",
+  "minAppVersion": "1.4.0",
+  "description": "Highlights currently open notes in the graph view — custom color, enlarged size, and dimming of other nodes. Includes an in-graph control panel.",
+  "author": "Marcel Kurtz",
+  "authorUrl": "https://github.com/4Cjyxbq25Cb",
+  "isDesktopOnly": false
+}
