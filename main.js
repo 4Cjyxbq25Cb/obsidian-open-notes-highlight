@@ -16,8 +16,8 @@ class SettingsTab extends obsidian.PluginSettingTab {
     containerEl.createEl('h2', { text: 'Open Notes Graph Highlight' });
 
     new obsidian.Setting(containerEl)
-      .setName('Farbe der offenen Notizen')
-      .setDesc('Farbe, mit der geöffnete Notizen im Graph hervorgehoben werden')
+      .setName('Highlight color')
+      .setDesc('Color used to highlight open notes in the graph')
       .addColorPicker(picker =>
         picker
           .setValue(this.plugin.settings.color)
@@ -28,8 +28,8 @@ class SettingsTab extends obsidian.PluginSettingTab {
       );
 
     new obsidian.Setting(containerEl)
-      .setName('Feste Größe')
-      .setDesc('Absolute Größe der offenen Notizen im Graph (normale Nodes: ~2–3)')
+      .setName('Node size')
+      .setDesc('Fixed size of open notes in the graph (normal nodes: ~2–3)')
       .addSlider(slider =>
         slider
           .setLimits(1, 30, 0.5)
@@ -42,8 +42,8 @@ class SettingsTab extends obsidian.PluginSettingTab {
       );
 
     new obsidian.Setting(containerEl)
-      .setName('Transparenz andere Notizen')
-      .setDesc('Wie stark nicht-geöffnete Notizen ausgeblendet werden (0 = unsichtbar, 1 = normal)')
+      .setName('Dim opacity')
+      .setDesc('Opacity of non-open nodes (0 = invisible, 1 = normal)')
       .addSlider(slider =>
         slider
           .setLimits(0.0, 1.0, 0.05)
@@ -233,7 +233,7 @@ class OpenNotesHighlight extends obsidian.Plugin {
     const colorRow = document.createElement('div');
     colorRow.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:8px;';
     const colorLbl = document.createElement('span');
-    colorLbl.textContent = 'Farbe';
+    colorLbl.textContent = 'Color';
     colorLbl.style.color = 'var(--text-muted)';
     const colorInput = document.createElement('input');
     colorInput.type = 'color';
@@ -262,7 +262,7 @@ class OpenNotesHighlight extends obsidian.Plugin {
       this.settings.fixedSize = v;
       await this.saveSettings();
     });
-    panel.appendChild(this._sliderRow('Größe', sizeSlider, sizeVal));
+    panel.appendChild(this._sliderRow('Size', sizeSlider, sizeVal));
 
     // dim opacity slider
     const dimVal = document.createElement('span');
@@ -279,7 +279,7 @@ class OpenNotesHighlight extends obsidian.Plugin {
       this.settings.dimOpacity = v;
       await this.saveSettings();
     });
-    panel.appendChild(this._sliderRow('Transparenz', dimSlider, dimVal));
+    panel.appendChild(this._sliderRow('Dim', dimSlider, dimVal));
 
     container.style.position = 'relative';
     container.appendChild(panel);

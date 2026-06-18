@@ -39,9 +39,9 @@ A small **control panel** appears in the bottom-right corner of the graph view f
 
 | Setting | Description | Default |
 |---|---|---|
-| **Farbe** / Color | Highlight color for open notes | `#e06c75` (red) |
-| **Größe** / Size | Fixed visual size of open notes (normal nodes: ~2–3) | `8` |
-| **Transparenz** / Dim opacity | Opacity of non-open nodes (0 = invisible, 1 = normal) | `0.15` |
+| **Highlight color** | Color used to highlight open notes | `#e06c75` (red) |
+| **Node size** | Fixed visual size of open notes (normal nodes: ~2–3) | `8` |
+| **Dim opacity** | Opacity of non-open nodes (0 = invisible, 1 = normal) | `0.15` |
 
 All settings are also accessible directly in the graph view via the control panel.
 
