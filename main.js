@@ -89,7 +89,10 @@ class OpenNotesHighlight extends obsidian.Plugin {
     this.registerEvent(this.app.workspace.on('file-open', () => this.update()));
     this.registerEvent(this.app.workspace.on('active-leaf-change', () => this.update()));
 
-    this.app.workspace.onLayoutReady(() => this.update());
+    this.app.workspace.onLayoutReady(() => {
+      this.update();
+      [500, 1500, 4000].forEach(ms => setTimeout(() => this.update(), ms));
+    });
   }
 
   onunload() {
@@ -135,94 +138,72 @@ class OpenNotesHighlight extends obsidian.Plugin {
     return false;
   }
 
-  patchNodeScale(node) {
-    if (!node.circle?.scale) return;
-    // Re-patch if node.circle was replaced with a new object
-    if (node._onhPatchedScale === node.circle.scale) return;
-    node._onhPatchedScale = node.circle.scale;
+  patchNodeCircle(node) {
+    if (!node.circle) return;
+    if (node._onhPatchedCircle === node.circle) return;
+    node._onhPatchedCircle = node.circle;
     const plugin = this;
-    const scale = node.circle.scale;
     const circle = node.circle;
 
-    // Intercept _x/_y backing fields (for initial sizing)
-    for (const prop of ['_x', '_y']) {
-      let val = scale[prop] ?? 0;
-      try {
-        Object.defineProperty(scale, prop, {
-          get() { return plugin.nodeMatches(node) ? plugin.settings.fixedSize : val; },
-          set(v) { val = v; },
-          configurable: true, enumerable: false,
-        });
-      } catch(e) {}
-    }
+    // Intercept worldAlpha so dimming applies at read-time, bypassing PixiJS dirty flags
+    let _worldAlpha = circle.worldAlpha ?? 1;
+    try {
+      Object.defineProperty(circle, 'worldAlpha', {
+        get() {
+          if (!plugin.settings.enabled || plugin.openPaths.size === 0) return _worldAlpha;
+          return plugin.nodeMatches(node) ? 1 : plugin.settings.dimOpacity;
+        },
+        set(v) { _worldAlpha = v; },
+        configurable: true, enumerable: false,
+      });
+    } catch(e) {}
 
-    // Patch updateTransform so worldTransform is corrected every render frame —
-    // this is what makes slider changes apply in real-time (no dirty-flag dependency)
-    if (typeof circle.updateTransform === 'function') {
-      const origUT = circle.updateTransform.bind(circle);
-      circle.updateTransform = function() {
-        origUT();
-        if (!plugin.nodeMatches(node)) return;
-        const s = plugin.settings.fixedSize;
-        const pWT = this.parent?.worldTransform;
-        const wt = this.worldTransform;
-        if (!pWT || !wt) return;
-        // Rewrite worldTransform as parentTransform * uniformScale(fixedSize)
-        wt.a = pWT.a * s;
-        wt.b = pWT.b * s;
-        wt.c = pWT.c * s;
-        wt.d = pWT.d * s;
-      };
+    // Intercept worldTransform matrix a/b/c/d so scale applies at read-time
+    const wt = circle.transform?.worldTransform;
+    if (wt) {
+      for (const k of ['a', 'b', 'c', 'd']) {
+        let val = wt[k] ?? 0;
+        try {
+          Object.defineProperty(wt, k, {
+            get() {
+              if (plugin.settings.enabled && plugin.nodeMatches(node)) {
+                const pWT = circle.parent?.transform?.worldTransform;
+                if (pWT) return pWT[k] * plugin.settings.fixedSize;
+              }
+              return val;
+            },
+            set(v) { val = v; },
+            configurable: true, enumerable: true,
+          });
+        } catch(e) {}
+      }
     }
   }
 
-  applyToNode(node, hasSomeOpen) {
+  applyToNode(node) {
     if (!node) return;
+    this.patchNodeCircle(node);
     if (!this.settings.enabled) {
       if (node._onhSaved) {
         node.color = node._onhOrigColor;
         node.weight = node._onhOrigWeight;
         delete node._onhSaved; delete node._onhOrigColor; delete node._onhOrigWeight;
       }
-      if (node._onhDimmed) {
-        node.fadeAlpha = 1;
-        if (node.circle) node.circle.alpha = 1;
-        node._onhDimmed = false;
-      }
       return;
     }
-    const colorObj = { a: 1, rgb: this.hexToInt(this.settings.color) };
     const matches = this.nodeMatches(node);
-
-    this.patchNodeScale(node);
-
     if (matches) {
       if (!node._onhSaved) {
         node._onhSaved = true;
         node._onhOrigColor = node.color;
         node._onhOrigWeight = node.weight;
       }
-      node.color = colorObj;
+      node.color = { a: 1, rgb: this.hexToInt(this.settings.color) };
       node.weight = this.settings.fixedSize * this.settings.fixedSize;
-      node.fadeAlpha = 1;
-      if (node.circle) node.circle.alpha = 1;
-    } else {
-      if (node._onhSaved) {
-        node.color = node._onhOrigColor;
-        node.weight = node._onhOrigWeight;
-        delete node._onhSaved;
-        delete node._onhOrigColor;
-        delete node._onhOrigWeight;
-      }
-      if (hasSomeOpen) {
-        node.fadeAlpha = this.settings.dimOpacity;
-        if (node.circle) node.circle.alpha = this.settings.dimOpacity;
-        node._onhDimmed = true;
-      } else if (node._onhDimmed) {
-        node.fadeAlpha = 1;
-        if (node.circle) node.circle.alpha = 1;
-        node._onhDimmed = false;
-      }
+    } else if (node._onhSaved) {
+      node.color = node._onhOrigColor;
+      node.weight = node._onhOrigWeight;
+      delete node._onhSaved; delete node._onhOrigColor; delete node._onhOrigWeight;
     }
   }
 
@@ -231,8 +212,7 @@ class OpenNotesHighlight extends obsidian.Plugin {
     let frameId;
     const loop = () => {
       const nodes = renderer.nodes;
-      const hasSomeOpen = plugin.openPaths.size > 0;
-      if (nodes) nodes.forEach(node => plugin.applyToNode(node, hasSomeOpen));
+      if (nodes) nodes.forEach(node => plugin.applyToNode(node));
       frameId = requestAnimationFrame(loop);
     };
     frameId = requestAnimationFrame(loop);
