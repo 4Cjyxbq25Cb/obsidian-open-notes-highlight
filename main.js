@@ -44,7 +44,7 @@ class SettingsTab extends obsidian.PluginSettingTab {
       .setDesc('Fixed size of open notes in the graph (normal nodes: ~2–3)')
       .addSlider(slider =>
         slider
-          .setLimits(1, 30, 0.5)
+          .setLimits(1, 10, 0.5)
           .setValue(this.plugin.settings.fixedSize)
           .setDynamicTooltip()
           .onChange(async value => {
@@ -263,7 +263,10 @@ class OpenNotesHighlight extends obsidian.Plugin {
     colorInput.type = 'color';
     colorInput.value = this.settings.color;
     colorInput.style.cssText = 'width:36px;height:22px;padding:0;border:none;cursor:pointer;background:none;';
-    colorInput.addEventListener('input', async e => {
+    colorInput.addEventListener('input', e => {
+      this.settings.color = e.target.value;
+    });
+    colorInput.addEventListener('change', async e => {
       this.settings.color = e.target.value;
       await this.saveSettings();
     });
@@ -271,73 +274,75 @@ class OpenNotesHighlight extends obsidian.Plugin {
     colorRow.appendChild(colorInput);
     panel.appendChild(colorRow);
 
-    // size slider
-    const sizeVal = document.createElement('span');
-    sizeVal.textContent = this.settings.fixedSize;
-    sizeVal.style.cssText = 'font-size:11px;min-width:22px;text-align:right;color:var(--text-muted);';
-    const sizeSlider = document.createElement('input');
-    sizeSlider.type = 'range';
-    sizeSlider.min = '1'; sizeSlider.max = '30'; sizeSlider.step = '0.5';
-    sizeSlider.value = this.settings.fixedSize;
-    sizeSlider.style.cssText = 'width:100%;margin:0;';
-    sizeSlider.addEventListener('input', async e => {
-      const v = parseFloat(e.target.value);
-      sizeVal.textContent = v;
+    const SIZE_STEPS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+    const DIM_STEPS  = [0, 0.05, 0.1, 0.15, 0.2, 0.3, 0.5, 0.65, 0.8, 1];
+
+    const sizeRow = this._stepRow('Size', SIZE_STEPS, this.settings.fixedSize, async v => {
       this.settings.fixedSize = v;
       await this.saveSettings();
     });
-    panel.appendChild(this._sliderRow('Size', sizeSlider, sizeVal));
+    panel.appendChild(sizeRow.el);
 
-    // dim opacity slider
-    const dimVal = document.createElement('span');
-    dimVal.textContent = this.settings.dimOpacity;
-    dimVal.style.cssText = 'font-size:11px;min-width:22px;text-align:right;color:var(--text-muted);';
-    const dimSlider = document.createElement('input');
-    dimSlider.type = 'range';
-    dimSlider.min = '0'; dimSlider.max = '1'; dimSlider.step = '0.05';
-    dimSlider.value = this.settings.dimOpacity;
-    dimSlider.style.cssText = 'width:100%;margin:0;';
-    dimSlider.addEventListener('input', async e => {
-      const v = parseFloat(e.target.value);
-      dimVal.textContent = v;
+    const dimRow = this._stepRow('Dim', DIM_STEPS, this.settings.dimOpacity, async v => {
       this.settings.dimOpacity = v;
       await this.saveSettings();
     });
-    panel.appendChild(this._sliderRow('Dim', dimSlider, dimVal));
+    panel.appendChild(dimRow.el);
 
     container.style.position = 'relative';
     container.appendChild(panel);
 
-    this.graphPanels.push({ panel, enableToggle, colorInput, sizeSlider, sizeVal, dimSlider, dimVal });
+    this.graphPanels.push({ panel, enableToggle, colorInput, updateSize: sizeRow.update, updateDim: dimRow.update });
     this.register(() => {
       panel.remove();
       this.graphPanels = this.graphPanels.filter(p => p.panel !== panel);
     });
   }
 
-  _sliderRow(label, slider, valEl) {
+  _stepRow(label, steps, currentValue, onSelect) {
     const wrapper = document.createElement('div');
-    wrapper.style.cssText = 'display:flex;flex-direction:column;gap:2px;';
+    wrapper.style.cssText = 'display:flex;flex-direction:column;gap:3px;';
     const top = document.createElement('div');
     top.style.cssText = 'display:flex;justify-content:space-between;align-items:center;';
     const lbl = document.createElement('span');
     lbl.textContent = label;
     lbl.style.color = 'var(--text-muted)';
+    const valDisplay = document.createElement('span');
+    valDisplay.style.cssText = 'font-size:11px;min-width:28px;text-align:right;color:var(--text-muted);';
     top.appendChild(lbl);
-    top.appendChild(valEl);
+    top.appendChild(valDisplay);
     wrapper.appendChild(top);
-    wrapper.appendChild(slider);
-    return wrapper;
+
+    const btnRow = document.createElement('div');
+    btnRow.style.cssText = 'display:flex;gap:2px;';
+    const buttons = steps.map(step => {
+      const btn = document.createElement('button');
+      btn.style.cssText = 'flex:1;height:10px;border:none;border-radius:2px;cursor:pointer;padding:0;';
+      btn.addEventListener('click', () => onSelect(step));
+      btnRow.appendChild(btn);
+      return { btn, step };
+    });
+    wrapper.appendChild(btnRow);
+
+    const update = value => {
+      const nearest = steps.reduce((a, b) => Math.abs(b - value) < Math.abs(a - value) ? b : a);
+      valDisplay.textContent = nearest;
+      buttons.forEach(({ btn, step }) => {
+        btn.style.background = step === nearest
+          ? 'var(--interactive-accent)'
+          : 'var(--background-modifier-border)';
+      });
+    };
+    update(currentValue);
+    return { el: wrapper, update };
   }
 
   syncPanels() {
-    for (const { enableToggle, colorInput, sizeSlider, sizeVal, dimSlider, dimVal } of this.graphPanels) {
+    for (const { enableToggle, colorInput, updateSize, updateDim } of this.graphPanels) {
       enableToggle.checked = this.settings.enabled;
       colorInput.value = this.settings.color;
-      sizeSlider.value = this.settings.fixedSize;
-      sizeVal.textContent = this.settings.fixedSize;
-      dimSlider.value = this.settings.dimOpacity;
-      dimVal.textContent = this.settings.dimOpacity;
+      updateSize(this.settings.fixedSize);
+      updateDim(this.settings.dimOpacity);
     }
   }
 
@@ -348,6 +353,9 @@ class OpenNotesHighlight extends obsidian.Plugin {
   async saveSettings() {
     await this.saveData(this.settings);
     this.update();
+    this.app.workspace.getLeavesOfType('graph').forEach(leaf => {
+      leaf.view?.renderer?.changed?.();
+    });
   }
 }
 
