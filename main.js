@@ -2,7 +2,7 @@
 
 var obsidian = require('obsidian');
 
-const DEFAULTS = { color: '#e06c75', fixedSize: 8, dimOpacity: 0.15 };
+const DEFAULTS = { enabled: true, color: '#e06c75', fixedSize: 8, dimOpacity: 0.15 };
 
 class SettingsTab extends obsidian.PluginSettingTab {
   constructor(app, plugin) {
@@ -14,6 +14,18 @@ class SettingsTab extends obsidian.PluginSettingTab {
     const { containerEl } = this;
     containerEl.empty();
     containerEl.createEl('h2', { text: 'Open Notes Graph Highlight' });
+
+    new obsidian.Setting(containerEl)
+      .setName('Enable')
+      .setDesc('Toggle highlighting on or off')
+      .addToggle(toggle =>
+        toggle
+          .setValue(this.plugin.settings.enabled)
+          .onChange(async value => {
+            this.plugin.settings.enabled = value;
+            await this.plugin.saveSettings();
+          })
+      );
 
     new obsidian.Setting(containerEl)
       .setName('Highlight color')
@@ -114,6 +126,7 @@ class OpenNotesHighlight extends obsidian.Plugin {
   }
 
   nodeMatches(node) {
+    if (!this.settings.enabled) return false;
     if (!node?.id) return false;
     if (this.openPaths.has(node.id)) return true;
     for (const p of this.openPaths) {
@@ -165,6 +178,19 @@ class OpenNotesHighlight extends obsidian.Plugin {
 
   applyToNode(node, hasSomeOpen) {
     if (!node) return;
+    if (!this.settings.enabled) {
+      if (node._onhSaved) {
+        node.color = node._onhOrigColor;
+        node.weight = node._onhOrigWeight;
+        delete node._onhSaved; delete node._onhOrigColor; delete node._onhOrigWeight;
+      }
+      if (node._onhDimmed) {
+        node.fadeAlpha = 1;
+        if (node.circle) node.circle.alpha = 1;
+        node._onhDimmed = false;
+      }
+      return;
+    }
     const colorObj = { a: 1, rgb: this.hexToInt(this.settings.color) };
     const matches = this.nodeMatches(node);
 
@@ -229,6 +255,24 @@ class OpenNotesHighlight extends obsidian.Plugin {
       'font-size:12px',
     ].join(';');
 
+    // enable toggle row
+    const enableRow = document.createElement('div');
+    enableRow.style.cssText = 'display:flex;align-items:center;justify-content:space-between;padding-bottom:6px;border-bottom:1px solid var(--background-modifier-border);';
+    const enableLbl = document.createElement('span');
+    enableLbl.textContent = 'Highlight';
+    enableLbl.style.cssText = 'font-weight:500;color:var(--text-normal);';
+    const enableToggle = document.createElement('input');
+    enableToggle.type = 'checkbox';
+    enableToggle.checked = this.settings.enabled;
+    enableToggle.style.cssText = 'width:16px;height:16px;cursor:pointer;';
+    enableToggle.addEventListener('change', async e => {
+      this.settings.enabled = e.target.checked;
+      await this.saveSettings();
+    });
+    enableRow.appendChild(enableLbl);
+    enableRow.appendChild(enableToggle);
+    panel.appendChild(enableRow);
+
     // color row
     const colorRow = document.createElement('div');
     colorRow.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:8px;';
@@ -284,7 +328,7 @@ class OpenNotesHighlight extends obsidian.Plugin {
     container.style.position = 'relative';
     container.appendChild(panel);
 
-    this.graphPanels.push({ panel, colorInput, sizeSlider, sizeVal, dimSlider, dimVal });
+    this.graphPanels.push({ panel, enableToggle, colorInput, sizeSlider, sizeVal, dimSlider, dimVal });
     this.register(() => {
       panel.remove();
       this.graphPanels = this.graphPanels.filter(p => p.panel !== panel);
@@ -307,7 +351,8 @@ class OpenNotesHighlight extends obsidian.Plugin {
   }
 
   syncPanels() {
-    for (const { colorInput, sizeSlider, sizeVal, dimSlider, dimVal } of this.graphPanels) {
+    for (const { enableToggle, colorInput, sizeSlider, sizeVal, dimSlider, dimVal } of this.graphPanels) {
+      enableToggle.checked = this.settings.enabled;
       colorInput.value = this.settings.color;
       sizeSlider.value = this.settings.fixedSize;
       sizeVal.textContent = this.settings.fixedSize;
