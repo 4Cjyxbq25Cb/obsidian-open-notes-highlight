@@ -21,6 +21,7 @@ jobs:
           tag="${GITHUB_REF#refs/tags/}"
           gh release create "$tag" \
             --title "$tag" \
+            --clobber \
             main.js \
             manifest.json \
             versions.json
