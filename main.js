@@ -226,7 +226,7 @@ class OpenNotesHighlight extends obsidian.Plugin {
     const panel = document.createElement('div');
     panel.className = 'onh-panel';
     panel.style.cssText = [
-      'position:absolute', 'bottom:80px', 'right:10px',
+      'position:absolute', 'bottom:100px', 'right:10px',
       'background:var(--background-secondary)',
       'border:1px solid var(--background-modifier-border)',
       'border-radius:6px', 'padding:10px 12px', 'z-index:100',
