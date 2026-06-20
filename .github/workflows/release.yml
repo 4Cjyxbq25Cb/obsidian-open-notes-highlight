@@ -19,9 +19,33 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           tag="${GITHUB_REF#refs/tags/}"
-          gh release create "$tag" \
-            --title "$tag" \
-            --clobber \
-            main.js \
-            manifest.json \
-            versions.json
+          repo="${GITHUB_REPOSITORY}"
+
+          # Release erstellen (löscht vorherige falls vorhanden)
+          existing=$(curl -s -o /dev/null -w "%{http_code}" \
+            -H "Authorization: token $GITHUB_TOKEN" \
+            "https://api.github.com/repos/$repo/releases/tags/$tag")
+          if [ "$existing" = "200" ]; then
+            release_id=$(curl -s \
+              -H "Authorization: token $GITHUB_TOKEN" \
+              "https://api.github.com/repos/$repo/releases/tags/$tag" | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
+            curl -s -X DELETE \
+              -H "Authorization: token $GITHUB_TOKEN" \
+              "https://api.github.com/repos/$repo/releases/$release_id"
+          fi
+
+          response=$(curl -s -X POST \
+            -H "Authorization: token $GITHUB_TOKEN" \
+            -H "Content-Type: application/json" \
+            "https://api.github.com/repos/$repo/releases" \
+            -d "{\"tag_name\": \"$tag\", \"name\": \"$tag\", \"draft\": false, \"prerelease\": false}")
+
+          upload_url=$(echo "$response" | python3 -c "import sys,json; print(json.load(sys.stdin)['upload_url'].split('{')[0])")
+
+          for file in main.js manifest.json versions.json; do
+            curl -s -X POST \
+              -H "Authorization: token $GITHUB_TOKEN" \
+              -H "Content-Type: application/octet-stream" \
+              "${upload_url}?name=$file" \
+              --data-binary @"$file"
+          done
