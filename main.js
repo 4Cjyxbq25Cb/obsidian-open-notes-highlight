@@ -2,7 +2,7 @@
 
 var obsidian = require('obsidian');
 
-const DEFAULTS = { enabled: true, color: '#e06c75', pinnedColor: '#61afef', fixedSize: 8, dimOpacity: 0.15 };
+const DEFAULTS = { enabled: true, color: '#e06c75', pinnedColor: '#61afef', fixedSize: 8, dimOpacity: 0.15, scope: 'all' };
 
 class SettingsTab extends obsidian.PluginSettingTab {
   constructor(app, plugin) {
@@ -23,6 +23,20 @@ class SettingsTab extends obsidian.PluginSettingTab {
           .setValue(this.plugin.settings.enabled)
           .onChange(async value => {
             this.plugin.settings.enabled = value;
+            await this.plugin.saveSettings();
+          })
+      );
+
+    new obsidian.Setting(containerEl)
+      .setName('Scope')
+      .setDesc('Which panels to highlight notes from')
+      .addDropdown(drop =>
+        drop
+          .addOption('all', 'All panels')
+          .addOption('panel', 'Active panel only')
+          .setValue(this.plugin.settings.scope)
+          .onChange(async value => {
+            this.plugin.settings.scope = value;
             await this.plugin.saveSettings();
           })
       );
@@ -86,6 +100,8 @@ class OpenNotesHighlight extends obsidian.Plugin {
     super(...arguments);
     this.openPaths = new Set();
     this.pinnedPaths = new Set();
+    this.activeGroupEl = null;
+    this.activeLeafPath = null;
     this.patchedRenderers = new WeakSet();
     this.graphPanels = [];
   }
@@ -100,9 +116,21 @@ class OpenNotesHighlight extends obsidian.Plugin {
 
     this.registerEvent(this.app.workspace.on('layout-change', () => this.update()));
     this.registerEvent(this.app.workspace.on('file-open', () => this.update()));
-    this.registerEvent(this.app.workspace.on('active-leaf-change', () => this.update()));
+    this.registerEvent(this.app.workspace.on('active-leaf-change', () => {
+      const active = this.app.workspace.activeLeaf;
+      if (active?.view?.getViewType() === 'markdown') {
+        this.activeGroupEl = active.containerEl?.closest('.workspace-tabs') ?? null;
+        this.activeLeafPath = active.view.file?.path ?? null;
+      }
+      this.update();
+    }));
 
     this.app.workspace.onLayoutReady(() => {
+      const active = this.app.workspace.activeLeaf;
+      if (active?.view?.getViewType() === 'markdown') {
+        this.activeGroupEl = active.containerEl?.closest('.workspace-tabs') ?? null;
+        this.activeLeafPath = active.view.file?.path ?? null;
+      }
       this.update();
       [500, 1500, 4000].forEach(ms => setTimeout(() => this.update(), ms));
     });
@@ -122,15 +150,19 @@ class OpenNotesHighlight extends obsidian.Plugin {
   refreshOpenPaths() {
     this.openPaths.clear();
     this.pinnedPaths.clear();
+    const panelOnly = this.settings.scope === 'panel';
     this.app.workspace.iterateAllLeaves(leaf => {
       if (leaf.view.getViewType() === 'markdown') {
         const file = leaf.view.file;
-        if (file?.path) {
-          if (leaf.pinned) {
-            this.pinnedPaths.add(file.path);
-          } else {
-            this.openPaths.add(file.path);
-          }
+        if (!file?.path) return;
+        if (panelOnly && this.activeGroupEl) {
+          const leafGroupEl = leaf.containerEl?.closest('.workspace-tabs');
+          if (leafGroupEl !== this.activeGroupEl && file.path !== this.activeLeafPath) return;
+        }
+        if (leaf.pinned) {
+          this.pinnedPaths.add(file.path);
+        } else {
+          this.openPaths.add(file.path);
         }
       }
     });
@@ -283,6 +315,24 @@ class OpenNotesHighlight extends obsidian.Plugin {
     enableRow.appendChild(enableToggle);
     panel.appendChild(enableRow);
 
+    // scope toggle row
+    const scopeRow = document.createElement('div');
+    scopeRow.style.cssText = 'display:flex;align-items:center;justify-content:space-between;padding-bottom:6px;border-bottom:1px solid var(--background-modifier-border);';
+    const scopeLbl = document.createElement('span');
+    scopeLbl.textContent = 'Active panel only';
+    scopeLbl.style.color = 'var(--text-muted)';
+    const scopeToggle = document.createElement('input');
+    scopeToggle.type = 'checkbox';
+    scopeToggle.checked = this.settings.scope === 'panel';
+    scopeToggle.style.cssText = 'width:16px;height:16px;cursor:pointer;';
+    scopeToggle.addEventListener('change', async e => {
+      this.settings.scope = e.target.checked ? 'panel' : 'all';
+      await this.saveSettings();
+    });
+    scopeRow.appendChild(scopeLbl);
+    scopeRow.appendChild(scopeToggle);
+    panel.appendChild(scopeRow);
+
     // open color row
     const colorRow = document.createElement('div');
     colorRow.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:8px;';
@@ -343,7 +393,7 @@ class OpenNotesHighlight extends obsidian.Plugin {
     container.style.position = 'relative';
     container.appendChild(panel);
 
-    this.graphPanels.push({ panel, enableToggle, colorInput, pinnedColorInput, updateSize: sizeRow.update, updateDim: dimRow.update });
+    this.graphPanels.push({ panel, enableToggle, scopeToggle, colorInput, pinnedColorInput, updateSize: sizeRow.update, updateDim: dimRow.update });
     this.register(() => {
       panel.remove();
       this.graphPanels = this.graphPanels.filter(p => p.panel !== panel);
@@ -389,8 +439,9 @@ class OpenNotesHighlight extends obsidian.Plugin {
   }
 
   syncPanels() {
-    for (const { enableToggle, colorInput, pinnedColorInput, updateSize, updateDim } of this.graphPanels) {
+    for (const { enableToggle, scopeToggle, colorInput, pinnedColorInput, updateSize, updateDim } of this.graphPanels) {
       enableToggle.checked = this.settings.enabled;
+      scopeToggle.checked = this.settings.scope === 'panel';
       colorInput.value = this.settings.color;
       pinnedColorInput.value = this.settings.pinnedColor;
       updateSize(this.settings.fixedSize);
