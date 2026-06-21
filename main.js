@@ -2,7 +2,7 @@
 
 var obsidian = require('obsidian');
 
-const DEFAULTS = { enabled: true, color: '#e06c75', fixedSize: 8, dimOpacity: 0.15 };
+const DEFAULTS = { enabled: true, color: '#e06c75', pinnedColor: '#61afef', fixedSize: 8, dimOpacity: 0.15 };
 
 class SettingsTab extends obsidian.PluginSettingTab {
   constructor(app, plugin) {
@@ -28,13 +28,25 @@ class SettingsTab extends obsidian.PluginSettingTab {
       );
 
     new obsidian.Setting(containerEl)
-      .setName('Highlight color')
+      .setName('Open note color')
       .setDesc('Color used to highlight open notes in the graph')
       .addColorPicker(picker =>
         picker
           .setValue(this.plugin.settings.color)
           .onChange(async value => {
             this.plugin.settings.color = value;
+            await this.plugin.saveSettings();
+          })
+      );
+
+    new obsidian.Setting(containerEl)
+      .setName('Pinned note color')
+      .setDesc('Color used to highlight pinned notes in the graph')
+      .addColorPicker(picker =>
+        picker
+          .setValue(this.plugin.settings.pinnedColor)
+          .onChange(async value => {
+            this.plugin.settings.pinnedColor = value;
             await this.plugin.saveSettings();
           })
       );
@@ -73,6 +85,7 @@ class OpenNotesHighlight extends obsidian.Plugin {
   constructor() {
     super(...arguments);
     this.openPaths = new Set();
+    this.pinnedPaths = new Set();
     this.patchedRenderers = new WeakSet();
     this.graphPanels = [];
   }
@@ -108,10 +121,17 @@ class OpenNotesHighlight extends obsidian.Plugin {
 
   refreshOpenPaths() {
     this.openPaths.clear();
+    this.pinnedPaths.clear();
     this.app.workspace.iterateAllLeaves(leaf => {
       if (leaf.view.getViewType() === 'markdown') {
         const file = leaf.view.file;
-        if (file?.path) this.openPaths.add(file.path);
+        if (file?.path) {
+          if (leaf.pinned) {
+            this.pinnedPaths.add(file.path);
+          } else {
+            this.openPaths.add(file.path);
+          }
+        }
       }
     });
   }
@@ -128,14 +148,23 @@ class OpenNotesHighlight extends obsidian.Plugin {
     });
   }
 
-  nodeMatches(node) {
-    if (!this.settings.enabled) return false;
-    if (!node?.id) return false;
-    if (this.openPaths.has(node.id)) return true;
-    for (const p of this.openPaths) {
-      if (p.endsWith('/' + node.id) || p === node.id) return true;
+  _pathMatches(paths, nodeId) {
+    if (paths.has(nodeId)) return true;
+    for (const p of paths) {
+      if (p.endsWith('/' + nodeId) || p === nodeId) return true;
     }
     return false;
+  }
+
+  getNodeStatus(node) {
+    if (!this.settings.enabled || !node?.id) return null;
+    if (this._pathMatches(this.pinnedPaths, node.id)) return 'pinned';
+    if (this._pathMatches(this.openPaths, node.id)) return 'open';
+    return null;
+  }
+
+  nodeMatches(node) {
+    return this.getNodeStatus(node) !== null;
   }
 
   patchNodeCircle(node) {
@@ -150,7 +179,7 @@ class OpenNotesHighlight extends obsidian.Plugin {
     try {
       Object.defineProperty(circle, 'worldAlpha', {
         get() {
-          if (!plugin.settings.enabled || plugin.openPaths.size === 0) return _worldAlpha;
+          if (!plugin.settings.enabled || (plugin.openPaths.size === 0 && plugin.pinnedPaths.size === 0)) return _worldAlpha;
           return plugin.nodeMatches(node) ? 1 : plugin.settings.dimOpacity;
         },
         set(v) { _worldAlpha = v; },
@@ -191,14 +220,15 @@ class OpenNotesHighlight extends obsidian.Plugin {
       }
       return;
     }
-    const matches = this.nodeMatches(node);
-    if (matches) {
+    const status = this.getNodeStatus(node);
+    if (status) {
       if (!node._onhSaved) {
         node._onhSaved = true;
         node._onhOrigColor = node.color;
         node._onhOrigWeight = node.weight;
       }
-      node.color = { a: 1, rgb: this.hexToInt(this.settings.color) };
+      const color = status === 'pinned' ? this.settings.pinnedColor : this.settings.color;
+      node.color = { a: 1, rgb: this.hexToInt(color) };
       node.weight = this.settings.fixedSize * this.settings.fixedSize;
     } else if (node._onhSaved) {
       node.color = node._onhOrigColor;
@@ -253,11 +283,11 @@ class OpenNotesHighlight extends obsidian.Plugin {
     enableRow.appendChild(enableToggle);
     panel.appendChild(enableRow);
 
-    // color row
+    // open color row
     const colorRow = document.createElement('div');
     colorRow.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:8px;';
     const colorLbl = document.createElement('span');
-    colorLbl.textContent = 'Color';
+    colorLbl.textContent = 'Open';
     colorLbl.style.color = 'var(--text-muted)';
     const colorInput = document.createElement('input');
     colorInput.type = 'color';
@@ -273,6 +303,27 @@ class OpenNotesHighlight extends obsidian.Plugin {
     colorRow.appendChild(colorLbl);
     colorRow.appendChild(colorInput);
     panel.appendChild(colorRow);
+
+    // pinned color row
+    const pinnedColorRow = document.createElement('div');
+    pinnedColorRow.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:8px;';
+    const pinnedColorLbl = document.createElement('span');
+    pinnedColorLbl.textContent = 'Pinned';
+    pinnedColorLbl.style.color = 'var(--text-muted)';
+    const pinnedColorInput = document.createElement('input');
+    pinnedColorInput.type = 'color';
+    pinnedColorInput.value = this.settings.pinnedColor;
+    pinnedColorInput.style.cssText = 'width:36px;height:22px;padding:0;border:none;cursor:pointer;background:none;';
+    pinnedColorInput.addEventListener('input', e => {
+      this.settings.pinnedColor = e.target.value;
+    });
+    pinnedColorInput.addEventListener('change', async e => {
+      this.settings.pinnedColor = e.target.value;
+      await this.saveSettings();
+    });
+    pinnedColorRow.appendChild(pinnedColorLbl);
+    pinnedColorRow.appendChild(pinnedColorInput);
+    panel.appendChild(pinnedColorRow);
 
     const SIZE_STEPS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
     const DIM_STEPS  = [0, 0.05, 0.1, 0.15, 0.2, 0.3, 0.5, 0.65, 0.8, 1];
@@ -292,7 +343,7 @@ class OpenNotesHighlight extends obsidian.Plugin {
     container.style.position = 'relative';
     container.appendChild(panel);
 
-    this.graphPanels.push({ panel, enableToggle, colorInput, updateSize: sizeRow.update, updateDim: dimRow.update });
+    this.graphPanels.push({ panel, enableToggle, colorInput, pinnedColorInput, updateSize: sizeRow.update, updateDim: dimRow.update });
     this.register(() => {
       panel.remove();
       this.graphPanels = this.graphPanels.filter(p => p.panel !== panel);
@@ -338,9 +389,10 @@ class OpenNotesHighlight extends obsidian.Plugin {
   }
 
   syncPanels() {
-    for (const { enableToggle, colorInput, updateSize, updateDim } of this.graphPanels) {
+    for (const { enableToggle, colorInput, pinnedColorInput, updateSize, updateDim } of this.graphPanels) {
       enableToggle.checked = this.settings.enabled;
       colorInput.value = this.settings.color;
+      pinnedColorInput.value = this.settings.pinnedColor;
       updateSize(this.settings.fixedSize);
       updateDim(this.settings.dimOpacity);
     }
