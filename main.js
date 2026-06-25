@@ -288,49 +288,77 @@ class OpenNotesHighlight extends obsidian.Plugin {
     const panel = document.createElement('div');
     panel.className = 'onh-panel';
     panel.style.cssText = [
-      'position:absolute', 'bottom:100px',
+      'position:absolute', 'bottom:100px', 'z-index:100',
       'background:var(--background-secondary)',
       'border:1px solid var(--background-modifier-border)',
-      'border-radius:6px', 'padding:10px 12px', 'z-index:100',
-      'display:flex', 'flex-direction:column', 'gap:8px',
-      'min-width:190px', 'box-shadow:0 2px 8px rgba(0,0,0,0.25)',
-      'font-size:12px',
+      'box-shadow:0 2px 8px rgba(0,0,0,0.25)',
+      'font-size:12px', 'display:flex', 'flex-direction:column',
     ].join(';');
 
+    let collapsed = false;
+
     const reposition = () => {
+      if (collapsed) { panel.style.left = '0'; panel.style.right = ''; return; }
       const gc = container.querySelector('.graph-controls');
       const settingsOpen = gc && gc.offsetWidth > 0;
       panel.style.right = settingsOpen ? '' : '10px';
       panel.style.left = settingsOpen ? '10px' : '';
     };
-    reposition();
     const observer = new MutationObserver(reposition);
     observer.observe(container, { childList: true, subtree: true, attributes: true, attributeFilter: ['class', 'style'] });
 
-    // title / collapse row
+    // tab shown when collapsed — flush to left edge
+    const tabEl = document.createElement('div');
+    tabEl.textContent = '▶';
+    tabEl.style.cssText = 'display:none;align-items:center;justify-content:center;cursor:pointer;color:var(--text-muted);font-size:11px;padding:10px 0;user-select:none;';
+    tabEl.addEventListener('click', () => setCollapsed(false));
+    panel.appendChild(tabEl);
+
+    // title row shown when expanded
     const titleRow = document.createElement('div');
-    titleRow.style.cssText = 'display:flex;align-items:center;justify-content:space-between;cursor:pointer;';
+    titleRow.style.cssText = 'display:flex;align-items:center;justify-content:space-between;cursor:pointer;padding:10px 12px 0;';
     const titleLbl = document.createElement('span');
     titleLbl.textContent = 'Highlight';
     titleLbl.style.cssText = 'font-weight:500;color:var(--text-normal);user-select:none;';
     const collapseArrow = document.createElement('span');
-    collapseArrow.textContent = '▲';
+    collapseArrow.textContent = '◀';
     collapseArrow.style.cssText = 'font-size:9px;color:var(--text-muted);user-select:none;';
     titleRow.appendChild(titleLbl);
     titleRow.appendChild(collapseArrow);
+    titleRow.addEventListener('click', () => setCollapsed(true));
     panel.appendChild(titleRow);
 
     // collapsible content
     const contentEl = document.createElement('div');
-    contentEl.style.cssText = 'display:flex;flex-direction:column;gap:8px;margin-top:6px;border-top:1px solid var(--background-modifier-border);padding-top:6px;';
+    contentEl.style.cssText = 'display:flex;flex-direction:column;gap:8px;padding:8px 12px 10px;margin-top:6px;border-top:1px solid var(--background-modifier-border);';
     panel.appendChild(contentEl);
 
-    let collapsed = false;
-    titleRow.addEventListener('click', () => {
-      collapsed = !collapsed;
-      contentEl.style.display = collapsed ? 'none' : 'flex';
-      collapseArrow.textContent = collapsed ? '▼' : '▲';
-    });
+    const setCollapsed = (val) => {
+      collapsed = val;
+      if (collapsed) {
+        panel.style.minWidth = '';
+        panel.style.width = '26px';
+        panel.style.padding = '0';
+        panel.style.borderRadius = '0 6px 6px 0';
+        panel.style.borderLeft = 'none';
+        tabEl.style.display = 'flex';
+        titleRow.style.display = 'none';
+        contentEl.style.display = 'none';
+      } else {
+        panel.style.width = '';
+        panel.style.minWidth = '190px';
+        panel.style.padding = '0';
+        panel.style.borderRadius = '6px';
+        panel.style.borderLeft = '';
+        tabEl.style.display = 'none';
+        titleRow.style.display = 'flex';
+        contentEl.style.display = 'flex';
+      }
+      reposition();
+    };
+
+    // initial state: expanded
+    setCollapsed(false);
 
     // enable toggle row
     const enableRow = document.createElement('div');
@@ -378,13 +406,8 @@ class OpenNotesHighlight extends obsidian.Plugin {
     colorInput.type = 'color';
     colorInput.value = this.settings.color;
     colorInput.style.cssText = 'width:36px;height:22px;padding:0;border:none;cursor:pointer;background:none;';
-    colorInput.addEventListener('input', e => {
-      this.settings.color = e.target.value;
-    });
-    colorInput.addEventListener('change', async e => {
-      this.settings.color = e.target.value;
-      await this.saveSettings();
-    });
+    colorInput.addEventListener('input', e => { this.settings.color = e.target.value; });
+    colorInput.addEventListener('change', async e => { this.settings.color = e.target.value; await this.saveSettings(); });
     colorRow.appendChild(colorLbl);
     colorRow.appendChild(colorInput);
     contentEl.appendChild(colorRow);
@@ -399,13 +422,8 @@ class OpenNotesHighlight extends obsidian.Plugin {
     pinnedColorInput.type = 'color';
     pinnedColorInput.value = this.settings.pinnedColor;
     pinnedColorInput.style.cssText = 'width:36px;height:22px;padding:0;border:none;cursor:pointer;background:none;';
-    pinnedColorInput.addEventListener('input', e => {
-      this.settings.pinnedColor = e.target.value;
-    });
-    pinnedColorInput.addEventListener('change', async e => {
-      this.settings.pinnedColor = e.target.value;
-      await this.saveSettings();
-    });
+    pinnedColorInput.addEventListener('input', e => { this.settings.pinnedColor = e.target.value; });
+    pinnedColorInput.addEventListener('change', async e => { this.settings.pinnedColor = e.target.value; await this.saveSettings(); });
     pinnedColorRow.appendChild(pinnedColorLbl);
     pinnedColorRow.appendChild(pinnedColorInput);
     contentEl.appendChild(pinnedColorRow);
@@ -414,14 +432,12 @@ class OpenNotesHighlight extends obsidian.Plugin {
     const DIM_STEPS  = [0, 0.05, 0.1, 0.15, 0.2, 0.3, 0.5, 0.65, 0.8, 1];
 
     const sizeRow = this._stepRow('Size', SIZE_STEPS, this.settings.fixedSize, async v => {
-      this.settings.fixedSize = v;
-      await this.saveSettings();
+      this.settings.fixedSize = v; await this.saveSettings();
     });
     contentEl.appendChild(sizeRow.el);
 
     const dimRow = this._stepRow('Dim', DIM_STEPS, this.settings.dimOpacity, async v => {
-      this.settings.dimOpacity = v;
-      await this.saveSettings();
+      this.settings.dimOpacity = v; await this.saveSettings();
     });
     contentEl.appendChild(dimRow.el);
 
