@@ -307,12 +307,37 @@ class OpenNotesHighlight extends obsidian.Plugin {
     const observer = new MutationObserver(reposition);
     observer.observe(container, { childList: true, subtree: true, attributes: true, attributeFilter: ['class', 'style'] });
 
+    // title / collapse row
+    const titleRow = document.createElement('div');
+    titleRow.style.cssText = 'display:flex;align-items:center;justify-content:space-between;cursor:pointer;';
+    const titleLbl = document.createElement('span');
+    titleLbl.textContent = 'Highlight';
+    titleLbl.style.cssText = 'font-weight:500;color:var(--text-normal);user-select:none;';
+    const collapseArrow = document.createElement('span');
+    collapseArrow.textContent = '▲';
+    collapseArrow.style.cssText = 'font-size:9px;color:var(--text-muted);user-select:none;';
+    titleRow.appendChild(titleLbl);
+    titleRow.appendChild(collapseArrow);
+    panel.appendChild(titleRow);
+
+    // collapsible content
+    const contentEl = document.createElement('div');
+    contentEl.style.cssText = 'display:flex;flex-direction:column;gap:8px;margin-top:6px;border-top:1px solid var(--background-modifier-border);padding-top:6px;';
+    panel.appendChild(contentEl);
+
+    let collapsed = false;
+    titleRow.addEventListener('click', () => {
+      collapsed = !collapsed;
+      contentEl.style.display = collapsed ? 'none' : 'flex';
+      collapseArrow.textContent = collapsed ? '▼' : '▲';
+    });
+
     // enable toggle row
     const enableRow = document.createElement('div');
-    enableRow.style.cssText = 'display:flex;align-items:center;justify-content:space-between;padding-bottom:6px;border-bottom:1px solid var(--background-modifier-border);';
+    enableRow.style.cssText = 'display:flex;align-items:center;justify-content:space-between;';
     const enableLbl = document.createElement('span');
-    enableLbl.textContent = 'Highlight';
-    enableLbl.style.cssText = 'font-weight:500;color:var(--text-normal);';
+    enableLbl.textContent = 'Enable';
+    enableLbl.style.color = 'var(--text-muted)';
     const enableToggle = document.createElement('input');
     enableToggle.type = 'checkbox';
     enableToggle.checked = this.settings.enabled;
@@ -323,11 +348,11 @@ class OpenNotesHighlight extends obsidian.Plugin {
     });
     enableRow.appendChild(enableLbl);
     enableRow.appendChild(enableToggle);
-    panel.appendChild(enableRow);
+    contentEl.appendChild(enableRow);
 
     // scope toggle row
     const scopeRow = document.createElement('div');
-    scopeRow.style.cssText = 'display:flex;align-items:center;justify-content:space-between;padding-bottom:6px;border-bottom:1px solid var(--background-modifier-border);';
+    scopeRow.style.cssText = 'display:flex;align-items:center;justify-content:space-between;padding-bottom:4px;border-bottom:1px solid var(--background-modifier-border);';
     const scopeLbl = document.createElement('span');
     scopeLbl.textContent = 'Active panel only';
     scopeLbl.style.color = 'var(--text-muted)';
@@ -341,7 +366,7 @@ class OpenNotesHighlight extends obsidian.Plugin {
     });
     scopeRow.appendChild(scopeLbl);
     scopeRow.appendChild(scopeToggle);
-    panel.appendChild(scopeRow);
+    contentEl.appendChild(scopeRow);
 
     // open color row
     const colorRow = document.createElement('div');
@@ -362,7 +387,7 @@ class OpenNotesHighlight extends obsidian.Plugin {
     });
     colorRow.appendChild(colorLbl);
     colorRow.appendChild(colorInput);
-    panel.appendChild(colorRow);
+    contentEl.appendChild(colorRow);
 
     // pinned color row
     const pinnedColorRow = document.createElement('div');
@@ -383,7 +408,7 @@ class OpenNotesHighlight extends obsidian.Plugin {
     });
     pinnedColorRow.appendChild(pinnedColorLbl);
     pinnedColorRow.appendChild(pinnedColorInput);
-    panel.appendChild(pinnedColorRow);
+    contentEl.appendChild(pinnedColorRow);
 
     const SIZE_STEPS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
     const DIM_STEPS  = [0, 0.05, 0.1, 0.15, 0.2, 0.3, 0.5, 0.65, 0.8, 1];
@@ -392,13 +417,13 @@ class OpenNotesHighlight extends obsidian.Plugin {
       this.settings.fixedSize = v;
       await this.saveSettings();
     });
-    panel.appendChild(sizeRow.el);
+    contentEl.appendChild(sizeRow.el);
 
     const dimRow = this._stepRow('Dim', DIM_STEPS, this.settings.dimOpacity, async v => {
       this.settings.dimOpacity = v;
       await this.saveSettings();
     });
-    panel.appendChild(dimRow.el);
+    contentEl.appendChild(dimRow.el);
 
     container.style.position = 'relative';
     container.appendChild(panel);
