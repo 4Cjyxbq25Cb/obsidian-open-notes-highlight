@@ -2,7 +2,7 @@
 
 var obsidian = require('obsidian');
 
-const DEFAULTS = { enabled: true, color: '#e06c75', pinnedColor: '#61afef', fixedSize: 8, dimOpacity: 0.15, neighborEdgeOpacity: 0.4, scope: 'all' };
+const DEFAULTS = { enabled: true, color: '#e06c75', pinnedColor: '#61afef', fixedSize: 8, dimOpacity: 0.15, scope: 'all' };
 
 class SettingsTab extends obsidian.PluginSettingTab {
   constructor(app, plugin) {
@@ -89,20 +89,6 @@ class SettingsTab extends obsidian.PluginSettingTab {
           .setDynamicTooltip()
           .onChange(async value => {
             this.plugin.settings.dimOpacity = value;
-            await this.plugin.saveSettings();
-          })
-      );
-
-    new obsidian.Setting(containerEl)
-      .setName('Neighbor edge opacity')
-      .setDesc('Opacity of edges from nodes directly connected to open notes (between dim and full)')
-      .addSlider(slider =>
-        slider
-          .setLimits(0.0, 1.0, 0.05)
-          .setValue(this.plugin.settings.neighborEdgeOpacity)
-          .setDynamicTooltip()
-          .onChange(async value => {
-            this.plugin.settings.neighborEdgeOpacity = value;
             await this.plugin.saveSettings();
           })
       );
@@ -255,40 +241,6 @@ class OpenNotesHighlight extends obsidian.Plugin {
     }
   }
 
-  patchLinkLine(link) {
-    const px = link.px;
-    if (!px) return;
-    if (link._onhPatchedPx === px) return;
-    link._onhPatchedPx = px;
-    const plugin = this;
-    let _worldAlpha = px.worldAlpha ?? 1;
-    try {
-      Object.defineProperty(px, 'worldAlpha', {
-        get() {
-          if (!plugin.settings.enabled || (plugin.openPaths.size === 0 && plugin.pinnedPaths.size === 0)) return _worldAlpha;
-          const lvl = link._onhEdgeLevel;
-          if (lvl === 'direct') return 1;
-          if (lvl === 'neighbor') return plugin.settings.neighborEdgeOpacity;
-          return plugin.settings.dimOpacity;
-        },
-        set(v) { _worldAlpha = v; },
-        configurable: true, enumerable: false,
-      });
-    } catch(e) {}
-  }
-
-  applyToLink(link, renderer) {
-    if (!link?.px) return;
-    const srcId = link.source?.id;
-    const tgtId = link.target?.id;
-    const srcIsOpen = this._pathMatches(this.openPaths, srcId) || this._pathMatches(this.pinnedPaths, srcId);
-    const tgtIsOpen = this._pathMatches(this.openPaths, tgtId) || this._pathMatches(this.pinnedPaths, tgtId);
-    const neighborPaths = renderer._onhNeighborPaths;
-    link._onhEdgeLevel = (srcIsOpen || tgtIsOpen) ? 'direct' :
-      (neighborPaths?.has(srcId) || neighborPaths?.has(tgtId)) ? 'neighbor' : 'other';
-    this.patchLinkLine(link);
-  }
-
   applyToNode(node) {
     if (!node) return;
     this.patchNodeCircle(node);
@@ -321,23 +273,8 @@ class OpenNotesHighlight extends obsidian.Plugin {
     const plugin = this;
     let frameId;
     const loop = () => {
-      const neighborPaths = new Set();
-      const links = renderer.links ?? renderer.edges;
-      if (links) {
-        links.forEach(link => {
-          const srcId = link.source?.id;
-          const tgtId = link.target?.id;
-          if (!srcId || !tgtId) return;
-          const srcIsOpen = plugin._pathMatches(plugin.openPaths, srcId) || plugin._pathMatches(plugin.pinnedPaths, srcId);
-          const tgtIsOpen = plugin._pathMatches(plugin.openPaths, tgtId) || plugin._pathMatches(plugin.pinnedPaths, tgtId);
-          if (srcIsOpen && !tgtIsOpen) neighborPaths.add(tgtId);
-          if (tgtIsOpen && !srcIsOpen) neighborPaths.add(srcId);
-        });
-      }
-      renderer._onhNeighborPaths = neighborPaths;
-
-      if (renderer.nodes) renderer.nodes.forEach(node => plugin.applyToNode(node));
-      if (links) links.forEach(link => plugin.applyToLink(link, renderer));
+      const nodes = renderer.nodes;
+      if (nodes) nodes.forEach(node => plugin.applyToNode(node));
       frameId = requestAnimationFrame(loop);
     };
     frameId = requestAnimationFrame(loop);
@@ -351,7 +288,7 @@ class OpenNotesHighlight extends obsidian.Plugin {
     const panel = document.createElement('div');
     panel.className = 'onh-panel';
     panel.style.cssText = [
-      'position:absolute', 'bottom:100px', 'right:10px',
+      'position:absolute', 'bottom:100px',
       'background:var(--background-secondary)',
       'border:1px solid var(--background-modifier-border)',
       'border-radius:6px', 'padding:10px 12px', 'z-index:100',
@@ -359,6 +296,16 @@ class OpenNotesHighlight extends obsidian.Plugin {
       'min-width:190px', 'box-shadow:0 2px 8px rgba(0,0,0,0.25)',
       'font-size:12px',
     ].join(';');
+
+    const reposition = () => {
+      const gc = container.querySelector('.graph-controls');
+      const settingsOpen = gc && gc.offsetWidth > 0;
+      panel.style.right = settingsOpen ? '' : '10px';
+      panel.style.left = settingsOpen ? '10px' : '';
+    };
+    reposition();
+    const observer = new MutationObserver(reposition);
+    observer.observe(container, { childList: true, subtree: true, attributes: true, attributeFilter: ['class', 'style'] });
 
     // enable toggle row
     const enableRow = document.createElement('div');
@@ -453,17 +400,12 @@ class OpenNotesHighlight extends obsidian.Plugin {
     });
     panel.appendChild(dimRow.el);
 
-    const nbrRow = this._stepRow('Nbr', DIM_STEPS, this.settings.neighborEdgeOpacity, async v => {
-      this.settings.neighborEdgeOpacity = v;
-      await this.saveSettings();
-    });
-    panel.appendChild(nbrRow.el);
-
     container.style.position = 'relative';
     container.appendChild(panel);
 
-    this.graphPanels.push({ panel, enableToggle, scopeToggle, colorInput, pinnedColorInput, updateSize: sizeRow.update, updateDim: dimRow.update, updateNbr: nbrRow.update });
+    this.graphPanels.push({ panel, enableToggle, scopeToggle, colorInput, pinnedColorInput, updateSize: sizeRow.update, updateDim: dimRow.update });
     this.register(() => {
+      observer.disconnect();
       panel.remove();
       this.graphPanels = this.graphPanels.filter(p => p.panel !== panel);
     });
@@ -508,14 +450,13 @@ class OpenNotesHighlight extends obsidian.Plugin {
   }
 
   syncPanels() {
-    for (const { enableToggle, scopeToggle, colorInput, pinnedColorInput, updateSize, updateDim, updateNbr } of this.graphPanels) {
+    for (const { enableToggle, scopeToggle, colorInput, pinnedColorInput, updateSize, updateDim } of this.graphPanels) {
       enableToggle.checked = this.settings.enabled;
       scopeToggle.checked = this.settings.scope === 'panel';
       colorInput.value = this.settings.color;
       pinnedColorInput.value = this.settings.pinnedColor;
       updateSize(this.settings.fixedSize);
       updateDim(this.settings.dimOpacity);
-      updateNbr(this.settings.neighborEdgeOpacity);
     }
   }
 
