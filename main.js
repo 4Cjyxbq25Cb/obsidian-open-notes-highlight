@@ -34,7 +34,7 @@ const DEFAULTS = {
   enabled: true,         // whether highlighting is active at all
   color: '#e06c75',      // highlight color for open (non-pinned) notes
   pinnedColor: '#61afef',// highlight color for pinned notes
-  fixedSize: 8,          // target node radius for highlighted nodes
+  fixedSize: 4,          // target node radius for highlighted nodes
   dimOpacity: 0.15,      // opacity applied to non-highlighted nodes
   scope: 'all',          // 'all' = every panel, 'panel' = active panel only
 };
