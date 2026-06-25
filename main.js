@@ -107,7 +107,7 @@ class SettingsTab extends obsidian.PluginSettingTab {
       .setDesc('Fixed size of open notes in the graph (normal nodes: ~2–3)')
       .addSlider(slider =>
         slider
-          .setLimits(1, 10, 0.5)
+          .setLimits(0.5, 10, 0.5)
           .setValue(this.plugin.settings.fixedSize)
           .setDynamicTooltip()
           .onChange(async value => {
@@ -552,7 +552,7 @@ class OpenNotesHighlight extends obsidian.Plugin {
     pinnedColorRow.appendChild(pinnedColorInput);
     contentEl.appendChild(pinnedColorRow);
 
-    const SIZE_STEPS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+    const SIZE_STEPS = [0.5, 1, 1.5, 2, 3, 4, 5, 6, 7, 8];
     const DIM_STEPS  = [0, 0.05, 0.1, 0.15, 0.2, 0.3, 0.5, 0.65, 0.8, 1];
 
     const sizeRow = this._stepRow('Size', SIZE_STEPS, this.settings.fixedSize, async v => {
