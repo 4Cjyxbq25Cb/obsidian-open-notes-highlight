@@ -7,12 +7,19 @@ on:
 
 permissions:
   contents: write
+  id-token: write
+  attestations: write
 
 jobs:
   release:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: main.js
 
       - name: Create GitHub Release
         env:
@@ -38,11 +45,11 @@ jobs:
             -H "Authorization: token $GITHUB_TOKEN" \
             -H "Content-Type: application/json" \
             "https://api.github.com/repos/$repo/releases" \
-            -d "{\"tag_name\": \"$tag\", \"name\": \"$tag\", \"draft\": false, \"prerelease\": false}")
+            -d "{\"tag_name\": \"$tag\", \"name\": \"$tag\", \"draft\": false, \"prerelease\": false, \"generate_release_notes\": true}")
 
           upload_url=$(echo "$response" | python3 -c "import sys,json; print(json.load(sys.stdin)['upload_url'].split('{')[0])")
 
-          for file in main.js manifest.json versions.json; do
+          for file in main.js manifest.json; do
             curl -s -X POST \
               -H "Authorization: token $GITHUB_TOKEN" \
               -H "Content-Type: application/octet-stream" \
