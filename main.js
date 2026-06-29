@@ -34,7 +34,7 @@ const DEFAULTS = {
   enabled: true,         // whether highlighting is active at all
   color: '#e06c75',      // highlight color for open (non-pinned) notes
   pinnedColor: '#61afef',// highlight color for pinned notes
-  fixedSize: 4,          // target node radius for highlighted nodes
+  sizeMult: 2,           // multiplier applied to the graph's own node size
   dimOpacity: 0.15,      // opacity applied to non-highlighted nodes
   scope: 'all',          // 'all' = every panel, 'panel' = active panel only
 };
@@ -103,15 +103,15 @@ class SettingsTab extends obsidian.PluginSettingTab {
       );
 
     new obsidian.Setting(containerEl)
-      .setName('Node size')
-      .setDesc('Fixed size of open notes in the graph (normal nodes: ~2–3)')
+      .setName('Size multiplier')
+      .setDesc('How much larger open notes appear relative to the graph\'s node size setting (1 = same size, 2 = twice as large)')
       .addSlider(slider =>
         slider
-          .setLimits(0.5, 10, 0.5)
-          .setValue(this.plugin.settings.fixedSize)
+          .setLimits(1, 5, 0.2)
+          .setValue(this.plugin.settings.sizeMult)
           .setDynamicTooltip()
           .onChange(async value => {
-            this.plugin.settings.fixedSize = value;
+            this.plugin.settings.sizeMult = value;
             await this.plugin.saveSettings();
           })
       );
@@ -325,8 +325,7 @@ class OpenNotesHighlight extends obsidian.Plugin {
           Object.defineProperty(wt, k, {
             get() {
               if (plugin.settings.enabled && plugin.nodeMatches(node)) {
-                const pWT = circle.parent?.transform?.worldTransform;
-                if (pWT) return pWT[k] * plugin.settings.fixedSize;
+                return val * plugin.settings.sizeMult;
               }
               return val;
             },
@@ -361,9 +360,8 @@ class OpenNotesHighlight extends obsidian.Plugin {
       const color = status === 'pinned' ? this.settings.pinnedColor : this.settings.color;
       node.color = { a: 1, rgb: this.hexToInt(color) };
       // node.weight drives the node's physics body size and click target.
-      // The renderer derives radius from sqrt(weight), so we set weight = r²
-      // to match the visual size imposed by the worldTransform patch.
-      node.weight = this.settings.fixedSize * this.settings.fixedSize;
+      // Scale by sizeMult² so the physics body matches the visual size.
+      node.weight = (node._onhOrigWeight || 1) * this.settings.sizeMult * this.settings.sizeMult;
     } else if (node._onhSaved) {
       node.color = node._onhOrigColor;
       node.weight = node._onhOrigWeight;
@@ -552,11 +550,11 @@ class OpenNotesHighlight extends obsidian.Plugin {
     pinnedColorRow.appendChild(pinnedColorInput);
     contentEl.appendChild(pinnedColorRow);
 
-    const SIZE_STEPS = [0.5, 1, 1.5, 2, 3, 4, 5, 6, 7, 8];
+    const SIZE_STEPS = [1, 1.2, 1.5, 1.8, 2, 2.5, 3, 3.5, 4, 5];
     const DIM_STEPS  = [0, 0.05, 0.1, 0.15, 0.2, 0.3, 0.5, 0.65, 0.8, 1];
 
-    const sizeRow = this._stepRow('Size', SIZE_STEPS, this.settings.fixedSize, async v => {
-      this.settings.fixedSize = v; await this.saveSettings();
+    const sizeRow = this._stepRow('Size ×', SIZE_STEPS, this.settings.sizeMult, async v => {
+      this.settings.sizeMult = v; await this.saveSettings();
     });
     contentEl.appendChild(sizeRow.el);
 
@@ -625,7 +623,7 @@ class OpenNotesHighlight extends obsidian.Plugin {
       scopeToggle.checked = this.settings.scope === 'panel';
       colorInput.value = this.settings.color;
       pinnedColorInput.value = this.settings.pinnedColor;
-      updateSize(this.settings.fixedSize);
+      updateSize(this.settings.sizeMult);
       updateDim(this.settings.dimOpacity);
     }
   }
@@ -633,7 +631,12 @@ class OpenNotesHighlight extends obsidian.Plugin {
   // ── Persistence ────────────────────────────────────────────────────────────
 
   async loadSettings() {
-    this.settings = Object.assign({}, DEFAULTS, await this.loadData());
+    const saved = await this.loadData() ?? {};
+    // Migrate from fixedSize (absolute) to sizeMult (multiplier)
+    if (saved.fixedSize !== undefined && saved.sizeMult === undefined) {
+      delete saved.fixedSize;
+    }
+    this.settings = Object.assign({}, DEFAULTS, saved);
   }
 
   async saveSettings() {
