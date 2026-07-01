@@ -7,6 +7,8 @@ An [Obsidian](https://obsidian.md) plugin that visually highlights currently ope
 - **Color highlight** — open notes appear in a custom color
 - **Size boost** — open notes are enlarged to a fixed size, independent of link count
 - **Dim other nodes** — non-open notes are faded out so open notes stand out
+- **Highlight linked notes** (optional) — notes directly linked to an open/pinned note are tinted in the same color at reduced opacity, so you can spot neighbors without confusing them for open notes
+- **Highlight edges** (optional) — edges connecting to an open/pinned note are tinted in that note's color, the same effect Obsidian applies when you hover a node in the graph
 - **In-graph control panel** — adjust color, size, and opacity directly in the graph view without opening settings
 
 ![Screenshot placeholder](screenshot.png)

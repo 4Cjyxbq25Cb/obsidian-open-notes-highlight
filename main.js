@@ -37,6 +37,10 @@ const DEFAULTS = {
   sizeMult: 2,           // multiplier applied to the graph's own node size
   dimOpacity: 0.15,      // opacity applied to non-highlighted nodes
   scope: 'all',          // 'all' = every panel, 'panel' = active panel only
+  highlightLinked: false,// whether notes linked to an open/pinned note get tinted too
+  linkedOpacity: 0.5,    // worldAlpha used for linked notes (open/pinned notes always use 1)
+  highlightEdges: false, // whether edges touching an open/pinned note get tinted in its color
+  edgeOpacity: 1,        // worldAlpha used for highlighted edges
 };
 
 // ─── Settings Tab ────────────────────────────────────────────────────────────
@@ -129,6 +133,58 @@ class SettingsTab extends obsidian.PluginSettingTab {
             await this.plugin.saveSettings();
           })
       );
+
+    new obsidian.Setting(containerEl)
+      .setName('Highlight linked notes')
+      .setDesc('Also tint notes that are directly linked to an open or pinned note, using the same color at reduced opacity so they stay distinguishable')
+      .addToggle(toggle =>
+        toggle
+          .setValue(this.plugin.settings.highlightLinked)
+          .onChange(async value => {
+            this.plugin.settings.highlightLinked = value;
+            await this.plugin.saveSettings();
+          })
+      );
+
+    new obsidian.Setting(containerEl)
+      .setName('Linked note opacity')
+      .setDesc('Color opacity used for linked notes (only relevant when "Highlight linked notes" is on)')
+      .addSlider(slider =>
+        slider
+          .setLimits(0.0, 1.0, 0.05)
+          .setValue(this.plugin.settings.linkedOpacity)
+          .setDynamicTooltip()
+          .onChange(async value => {
+            this.plugin.settings.linkedOpacity = value;
+            await this.plugin.saveSettings();
+          })
+      );
+
+    new obsidian.Setting(containerEl)
+      .setName('Highlight edges')
+      .setDesc('Tint edges connecting to an open or pinned note in that note\'s color, similar to Obsidian\'s native hover highlight')
+      .addToggle(toggle =>
+        toggle
+          .setValue(this.plugin.settings.highlightEdges)
+          .onChange(async value => {
+            this.plugin.settings.highlightEdges = value;
+            await this.plugin.saveSettings();
+          })
+      );
+
+    new obsidian.Setting(containerEl)
+      .setName('Edge opacity')
+      .setDesc('Opacity of highlighted edges (only relevant when "Highlight edges" is on)')
+      .addSlider(slider =>
+        slider
+          .setLimits(0.0, 1.0, 0.05)
+          .setValue(this.plugin.settings.edgeOpacity)
+          .setDynamicTooltip()
+          .onChange(async value => {
+            this.plugin.settings.edgeOpacity = value;
+            await this.plugin.saveSettings();
+          })
+      );
   }
 }
 
@@ -139,6 +195,10 @@ class OpenNotesHighlight extends obsidian.Plugin {
     super(...arguments);
     this.openPaths = new Set();    // paths of currently open (non-pinned) notes
     this.pinnedPaths = new Set();  // paths of currently pinned notes
+    // Paths of notes directly linked (either direction) to an open/pinned note,
+    // only populated when settings.highlightLinked is on. Maps path -> 'pinned'
+    // or 'open', i.e. which kind of note it is linked to (pinned takes priority).
+    this.linkedPaths = new Map();
     // Used for "active panel only" scope: the .workspace-tabs container element
     // of the most recently focused markdown leaf, plus its file path as a fallback
     // for the brief moment when the containerEl is detached from the DOM.
@@ -197,6 +257,7 @@ class OpenNotesHighlight extends obsidian.Plugin {
 
   update() {
     this.refreshOpenPaths();
+    this.computeLinkedPaths();
     this.handleGraphLeaves();
     this.syncPanels();
   }
@@ -227,6 +288,44 @@ class OpenNotesHighlight extends obsidian.Plugin {
     });
   }
 
+  // Rebuilds linkedPaths from Obsidian's metadata cache: any note that has a
+  // resolved link (in either direction) to a currently open/pinned note gets
+  // recorded here, tagged with whichever kind of note it is linked to ('pinned'
+  // wins over 'open' if a note is linked to both). No-op unless the
+  // "highlight linked notes" setting is on.
+  computeLinkedPaths() {
+    this.linkedPaths.clear();
+    if (!this.settings.highlightLinked) return;
+    if (this.openPaths.size === 0 && this.pinnedPaths.size === 0) return;
+
+    const classify = path => this.pinnedPaths.has(path) ? 'pinned' : this.openPaths.has(path) ? 'open' : null;
+    const addLinked = (path, kind) => {
+      if (this.openPaths.has(path) || this.pinnedPaths.has(path)) return;
+      if (this.linkedPaths.get(path) === 'pinned') return;
+      this.linkedPaths.set(path, kind);
+    };
+
+    const resolvedLinks = this.app.metadataCache.resolvedLinks ?? {};
+    for (const source in resolvedLinks) {
+      const sourceKind = classify(source);
+      const targets = resolvedLinks[source];
+      for (const target in targets) {
+        if (sourceKind) addLinked(target, sourceKind);
+        const targetKind = classify(target);
+        if (targetKind) addLinked(source, targetKind);
+      }
+    }
+  }
+
+  // Like _pathMatches, but for the path -> kind map used by linkedPaths.
+  _linkedKind(nodeId) {
+    if (this.linkedPaths.has(nodeId)) return this.linkedPaths.get(nodeId);
+    for (const [p, kind] of this.linkedPaths) {
+      if (p.endsWith('/' + nodeId)) return kind;
+    }
+    return null;
+  }
+
   // Attaches our renderer loop and injects the control panel for every open
   // graph leaf that hasn't been set up yet.
   handleGraphLeaves() {
@@ -255,16 +354,25 @@ class OpenNotesHighlight extends obsidian.Plugin {
     return false;
   }
 
-  // Returns 'pinned', 'open', or null for a given graph node.
+  // Returns 'pinned', 'open', 'linked-pinned', 'linked-open', or null for a
+  // given graph node. The 'linked-*' statuses only occur when highlightLinked
+  // is enabled and the node is not itself open/pinned.
   getNodeStatus(node) {
     if (!this.settings.enabled || !node?.id) return null;
     if (this._pathMatches(this.pinnedPaths, node.id)) return 'pinned';
     if (this._pathMatches(this.openPaths, node.id)) return 'open';
+    if (this.settings.highlightLinked) {
+      const kind = this._linkedKind(node.id);
+      if (kind) return `linked-${kind}`;
+    }
     return null;
   }
 
-  nodeMatches(node) {
-    return this.getNodeStatus(node) !== null;
+  // Only 'pinned' and 'open' nodes get the enlarged size — linked notes stay
+  // at their normal size and are distinguished purely by color opacity.
+  isSizedNode(node) {
+    const status = this.getNodeStatus(node);
+    return status === 'pinned' || status === 'open';
   }
 
   // ── PixiJS patching ────────────────────────────────────────────────────────
@@ -301,7 +409,10 @@ class OpenNotesHighlight extends obsidian.Plugin {
       Object.defineProperty(circle, 'worldAlpha', {
         get() {
           if (!plugin.settings.enabled || (plugin.openPaths.size === 0 && plugin.pinnedPaths.size === 0)) return _worldAlpha;
-          return plugin.nodeMatches(node) ? 1 : plugin.settings.dimOpacity;
+          const status = plugin.getNodeStatus(node);
+          if (status === 'pinned' || status === 'open') return 1;
+          if (status === 'linked-pinned' || status === 'linked-open') return plugin.settings.linkedOpacity;
+          return plugin.settings.dimOpacity;
         },
         set(v) { _worldAlpha = v; },
         configurable: true, // allows re-patching if needed
@@ -324,7 +435,7 @@ class OpenNotesHighlight extends obsidian.Plugin {
         try {
           Object.defineProperty(wt, k, {
             get() {
-              if (plugin.settings.enabled && plugin.nodeMatches(node)) {
+              if (plugin.settings.enabled && plugin.isSizedNode(node)) {
                 return val * plugin.settings.sizeMult;
               }
               return val;
@@ -336,6 +447,83 @@ class OpenNotesHighlight extends obsidian.Plugin {
         } catch(e) {}
       }
     }
+  }
+
+  // Returns 'pinned' or 'open' if either endpoint of the link is a pinned or
+  // open note (pinned takes priority), or null if neither endpoint matches.
+  getLinkColorKind(link) {
+    const srcId = link.source?.id;
+    const tgtId = link.target?.id;
+    if (this._pathMatches(this.pinnedPaths, srcId) || this._pathMatches(this.pinnedPaths, tgtId)) return 'pinned';
+    if (this._pathMatches(this.openPaths, srcId) || this._pathMatches(this.openPaths, tgtId)) return 'open';
+    return null;
+  }
+
+  // Patches the PixiJS sprite (link.line) used to draw an edge so that edges
+  // touching an open/pinned note are tinted in that note's color — the same
+  // effect Obsidian's own graph applies to edges of the currently hovered node
+  // (see colors.lineHighlight in the core renderer), except keyed to our own
+  // open/pinned sets instead of a single hover target, and permanent rather
+  // than transient.
+  //
+  // Important: the PixiJS batch renderer never reads `sprite.tint` when
+  // drawing — it reads `sprite._tintRGB`, a little-endian (0xBBGGRR) copy
+  // that only the original `tint` setter keeps in sync. Intercepting `tint`
+  // itself therefore has no visual effect (and worse, shadows the prototype
+  // setter so `_tintRGB` stops updating entirely). So we intercept `_tintRGB`,
+  // the value the renderer actually consumes at draw time.
+  //
+  // We also intercept `worldAlpha` so highlighted edges render at full
+  // opacity, matching the native hover effect (which lifts connected edges
+  // from the faded default to alpha 1).
+  patchLinkLine(link) {
+    const line = link.line;
+    if (!line) return;
+    if (link._onhPatchedLine === line && link._onhLineOwner === this) return;
+    link._onhPatchedLine = line;
+    link._onhLineOwner = this;
+    const plugin = this;
+
+    // Heal lines patched by a previous plugin version that shadowed `tint`:
+    // deleting the own property restores the prototype accessor so Obsidian's
+    // own tint writes reach _tintRGB again.
+    if (Object.getOwnPropertyDescriptor(line, 'tint')) {
+      try { delete line.tint; } catch(e) {}
+    }
+
+    const overrideColor = () => {
+      if (!plugin.settings.enabled || !plugin.settings.highlightEdges) return null;
+      const kind = plugin.getLinkColorKind(link);
+      if (!kind) return null;
+      return plugin.hexToInt(kind === 'pinned' ? plugin.settings.pinnedColor : plugin.settings.color);
+    };
+
+    let _tintRGB = line._tintRGB;
+    try {
+      Object.defineProperty(line, '_tintRGB', {
+        get() {
+          const c = overrideColor();
+          if (c === null) return _tintRGB;
+          // convert 0xRRGGBB to the little-endian 0xBBGGRR the batcher expects
+          return ((c & 0xff) << 16) | (c & 0xff00) | (c >>> 16);
+        },
+        set(v) { _tintRGB = v; },
+        configurable: true,
+        enumerable: false,
+      });
+    } catch(e) {}
+
+    let _worldAlpha = line.worldAlpha ?? 1;
+    try {
+      Object.defineProperty(line, 'worldAlpha', {
+        get() {
+          return overrideColor() === null ? _worldAlpha : plugin.settings.edgeOpacity;
+        },
+        set(v) { _worldAlpha = v; },
+        configurable: true,
+        enumerable: false,
+      });
+    } catch(e) {}
   }
 
   // Applies color, size, and circle patches to a single node every frame.
@@ -357,11 +545,19 @@ class OpenNotesHighlight extends obsidian.Plugin {
         node._onhOrigColor = node.color;
         node._onhOrigWeight = node.weight;
       }
-      const color = status === 'pinned' ? this.settings.pinnedColor : this.settings.color;
+      // 'linked-*' notes reuse the color of the note they're linked to; the
+      // reduced opacity that sets them apart is applied via worldAlpha
+      // (see patchNodeCircle), not here — node.color.a has no visible effect
+      // on the renderer, only its rgb component does.
+      const isPinnedTone = status === 'pinned' || status === 'linked-pinned';
+      const color = isPinnedTone ? this.settings.pinnedColor : this.settings.color;
       node.color = { a: 1, rgb: this.hexToInt(color) };
       // node.weight drives the node's physics body size and click target.
       // Scale by sizeMult² so the physics body matches the visual size.
-      node.weight = (node._onhOrigWeight || 1) * this.settings.sizeMult * this.settings.sizeMult;
+      // Linked notes keep their original weight — only pinned/open are enlarged.
+      node.weight = this.isSizedNode(node)
+        ? (node._onhOrigWeight || 1) * this.settings.sizeMult * this.settings.sizeMult
+        : node._onhOrigWeight;
     } else if (node._onhSaved) {
       node.color = node._onhOrigColor;
       node.weight = node._onhOrigWeight;
@@ -390,6 +586,8 @@ class OpenNotesHighlight extends obsidian.Plugin {
     const loop = () => {
       const nodes = renderer.nodes;
       if (nodes) nodes.forEach(node => plugin.applyToNode(node));
+      const links = renderer.links;
+      if (links) links.forEach(link => plugin.patchLinkLine(link));
       frameId = requestAnimationFrame(loop);
     };
     frameId = requestAnimationFrame(loop);
@@ -563,10 +761,58 @@ class OpenNotesHighlight extends obsidian.Plugin {
     });
     contentEl.appendChild(dimRow.el);
 
+    const linkedRow = document.createElement('div');
+    linkedRow.style.cssText = 'display:flex;align-items:center;justify-content:space-between;padding-top:4px;border-top:1px solid var(--background-modifier-border);';
+    const linkedLbl = document.createElement('span');
+    linkedLbl.textContent = 'Highlight linked';
+    linkedLbl.style.color = 'var(--text-muted)';
+    const linkedToggle = document.createElement('input');
+    linkedToggle.type = 'checkbox';
+    linkedToggle.checked = this.settings.highlightLinked;
+    linkedToggle.style.cssText = 'width:16px;height:16px;cursor:pointer;';
+    linkedToggle.addEventListener('change', async e => {
+      this.settings.highlightLinked = e.target.checked;
+      await this.saveSettings();
+    });
+    linkedRow.appendChild(linkedLbl);
+    linkedRow.appendChild(linkedToggle);
+    contentEl.appendChild(linkedRow);
+
+    const linkedOpacityRow = this._stepRow('Link α', DIM_STEPS, this.settings.linkedOpacity, async v => {
+      this.settings.linkedOpacity = v; await this.saveSettings();
+    });
+    contentEl.appendChild(linkedOpacityRow.el);
+
+    const edgesRow = document.createElement('div');
+    edgesRow.style.cssText = 'display:flex;align-items:center;justify-content:space-between;';
+    const edgesLbl = document.createElement('span');
+    edgesLbl.textContent = 'Highlight edges';
+    edgesLbl.style.color = 'var(--text-muted)';
+    const edgesToggle = document.createElement('input');
+    edgesToggle.type = 'checkbox';
+    edgesToggle.checked = this.settings.highlightEdges;
+    edgesToggle.style.cssText = 'width:16px;height:16px;cursor:pointer;';
+    edgesToggle.addEventListener('change', async e => {
+      this.settings.highlightEdges = e.target.checked;
+      await this.saveSettings();
+    });
+    edgesRow.appendChild(edgesLbl);
+    edgesRow.appendChild(edgesToggle);
+    contentEl.appendChild(edgesRow);
+
+    const edgeOpacityRow = this._stepRow('Edge α', DIM_STEPS, this.settings.edgeOpacity, async v => {
+      this.settings.edgeOpacity = v; await this.saveSettings();
+    });
+    contentEl.appendChild(edgeOpacityRow.el);
+
     container.style.position = 'relative';
     container.appendChild(panel);
 
-    this.graphPanels.push({ panel, enableToggle, scopeToggle, colorInput, pinnedColorInput, updateSize: sizeRow.update, updateDim: dimRow.update });
+    this.graphPanels.push({
+      panel, enableToggle, scopeToggle, colorInput, pinnedColorInput, linkedToggle, edgesToggle,
+      updateSize: sizeRow.update, updateDim: dimRow.update, updateLinkedOpacity: linkedOpacityRow.update,
+      updateEdgeOpacity: edgeOpacityRow.update,
+    });
     this.register(() => {
       observer.disconnect();
       panel.remove();
@@ -618,13 +864,17 @@ class OpenNotesHighlight extends obsidian.Plugin {
   // Called after any settings change so panels stay in sync even when the
   // change came from the settings tab rather than the panel itself.
   syncPanels() {
-    for (const { enableToggle, scopeToggle, colorInput, pinnedColorInput, updateSize, updateDim } of this.graphPanels) {
+    for (const { enableToggle, scopeToggle, colorInput, pinnedColorInput, linkedToggle, edgesToggle, updateSize, updateDim, updateLinkedOpacity, updateEdgeOpacity } of this.graphPanels) {
       enableToggle.checked = this.settings.enabled;
       scopeToggle.checked = this.settings.scope === 'panel';
       colorInput.value = this.settings.color;
       pinnedColorInput.value = this.settings.pinnedColor;
+      linkedToggle.checked = this.settings.highlightLinked;
+      edgesToggle.checked = this.settings.highlightEdges;
       updateSize(this.settings.sizeMult);
       updateDim(this.settings.dimOpacity);
+      updateLinkedOpacity(this.settings.linkedOpacity);
+      updateEdgeOpacity(this.settings.edgeOpacity);
     }
   }
 
