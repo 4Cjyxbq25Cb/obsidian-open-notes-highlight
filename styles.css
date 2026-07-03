@@ -1,0 +1,163 @@
+/* Open Notes Graph Highlight — in-graph control panel.
+   State classes toggled from main.js:
+     .is-collapsed  panel folded into a slim tab on the left edge
+     .onh-left      panel moved left while Obsidian's graph controls are open
+     .is-active     currently selected step button */
+
+.onh-graph-container {
+  position: relative;
+}
+
+.onh-panel {
+  position: absolute;
+  bottom: 100px;
+  right: 10px;
+  z-index: 100;
+  min-width: 190px;
+  display: flex;
+  flex-direction: column;
+  font-size: 12px;
+  background: var(--background-secondary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 6px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
+}
+
+.onh-panel.onh-left {
+  left: 10px;
+  right: auto;
+}
+
+/* Collapsed: a 26px strip without left border, flush with the container edge. */
+.onh-panel.is-collapsed {
+  left: 0;
+  right: auto;
+  width: 26px;
+  min-width: 0;
+  border-left: none;
+  border-radius: 0 6px 6px 0;
+}
+
+.onh-tab {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  color: var(--text-muted);
+  font-size: 11px;
+  padding: 10px 0;
+  user-select: none;
+}
+
+.onh-panel.is-collapsed .onh-tab {
+  display: flex;
+}
+
+.onh-panel.is-collapsed .onh-title-row,
+.onh-panel.is-collapsed .onh-content {
+  display: none;
+}
+
+.onh-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  cursor: pointer;
+  padding: 10px 12px 0;
+}
+
+.onh-title {
+  font-weight: 500;
+  color: var(--text-normal);
+  user-select: none;
+}
+
+.onh-collapse-arrow {
+  font-size: 9px;
+  color: var(--text-muted);
+  user-select: none;
+}
+
+.onh-content {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px 12px 10px;
+  margin-top: 6px;
+  border-top: 1px solid var(--background-modifier-border);
+}
+
+.onh-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.onh-row-bb {
+  padding-bottom: 4px;
+  border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.onh-row-bt {
+  padding-top: 4px;
+  border-top: 1px solid var(--background-modifier-border);
+}
+
+.onh-label {
+  color: var(--text-muted);
+}
+
+.onh-checkbox {
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
+}
+
+.onh-color {
+  width: 36px;
+  height: 22px;
+  padding: 0;
+  border: none;
+  cursor: pointer;
+  background: none;
+}
+
+.onh-steprow {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.onh-steprow-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.onh-step-val {
+  font-size: 11px;
+  min-width: 28px;
+  text-align: right;
+  color: var(--text-muted);
+}
+
+.onh-step-btns {
+  display: flex;
+  gap: 2px;
+}
+
+.onh-step-btn {
+  flex: 1;
+  height: 10px;
+  padding: 0;
+  border: none;
+  border-radius: 2px;
+  cursor: pointer;
+  background: var(--background-modifier-border);
+  box-shadow: none;
+}
+
+.onh-step-btn.is-active {
+  background: var(--interactive-accent);
+}

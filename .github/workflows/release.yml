@@ -19,7 +19,9 @@ jobs:
       - name: Attest build provenance
         uses: actions/attest-build-provenance@v2
         with:
-          subject-path: main.js
+          subject-path: |
+            main.js
+            styles.css
 
       - name: Create GitHub Release
         env:
@@ -49,7 +51,7 @@ jobs:
 
           upload_url=$(echo "$response" | python3 -c "import sys,json; print(json.load(sys.stdin)['upload_url'].split('{')[0])")
 
-          for file in main.js manifest.json; do
+          for file in main.js manifest.json styles.css; do
             curl -s -X POST \
               -H "Authorization: token $GITHUB_TOKEN" \
               -H "Content-Type: application/octet-stream" \

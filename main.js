@@ -27,7 +27,7 @@
  * without waiting for a Obsidian-triggered redraw.
  */
 
-var obsidian = require('obsidian');
+const obsidian = require('obsidian');
 
 // Default values for all persisted settings.
 const DEFAULTS = {
@@ -54,7 +54,6 @@ class SettingsTab extends obsidian.PluginSettingTab {
   display() {
     const { containerEl } = this;
     containerEl.empty();
-    containerEl.createEl('h2', { text: 'Open Notes Graph Highlight' });
 
     new obsidian.Setting(containerEl)
       .setName('Enable')
@@ -207,9 +206,22 @@ class OpenNotesHighlight extends obsidian.Plugin {
     // Tracks which renderers already have our rAF loop attached, so we never
     // attach twice to the same renderer instance.
     this.patchedRenderers = new WeakSet();
+    // Renderers belonging to currently open graph leaves; rebuilt on every
+    // update(). The rAF loop of a renderer that dropped out of this set stops
+    // itself, so closed graphs don't keep looping (and their renderer objects
+    // aren't kept alive by our closures).
+    this.liveRenderers = new Set();
     // One entry per open graph leaf; used to sync the in-graph control panel
     // when settings change from outside (e.g. the settings tab).
     this.graphPanels = [];
+    // Flipped to false in onunload. The defineProperty getters installed on
+    // PixiJS objects survive the plugin instance, so they must check this flag
+    // and fall through to the original values once the plugin is disabled.
+    this._active = true;
+    // Generation counter for the per-node status cache; bumped on every
+    // update() so cached statuses are invalidated whenever open/pinned/linked
+    // sets or relevant settings may have changed.
+    this._gen = 0;
   }
 
   hexToInt(hex) {
@@ -222,40 +234,69 @@ class OpenNotesHighlight extends obsidian.Plugin {
     await this.loadSettings();
     this.addSettingTab(new SettingsTab(this.app, this));
 
+    this.addCommand({
+      id: 'toggle-highlighting',
+      name: 'Toggle highlighting',
+      callback: async () => {
+        this.settings.enabled = !this.settings.enabled;
+        await this.saveSettings();
+      },
+    });
+
     this.registerEvent(this.app.workspace.on('layout-change', () => this.update()));
     this.registerEvent(this.app.workspace.on('file-open', () => this.update()));
+    // Note: querying the active view here instead of trusting the event's
+    // leaf parameter — the parameter proved unreliable in earlier versions.
     this.registerEvent(this.app.workspace.on('active-leaf-change', () => {
-      const active = this.app.workspace.activeLeaf;
-      if (active?.view?.getViewType() === 'markdown') {
+      const view = this.app.workspace.getActiveViewOfType(obsidian.MarkdownView);
+      if (view) {
         // Store the panel group element, not just the leaf, because the leaf
         // itself may move between panels (drag-and-drop) without firing this event again.
-        this.activeGroupEl = active.containerEl?.closest('.workspace-tabs') ?? null;
-        this.activeLeafPath = active.view.file?.path ?? null;
+        this.activeGroupEl = view.containerEl?.closest('.workspace-tabs') ?? null;
+        this.activeLeafPath = view.file?.path ?? null;
       }
       this.update();
     }));
 
     this.app.workspace.onLayoutReady(() => {
-      const active = this.app.workspace.activeLeaf;
-      if (active?.view?.getViewType() === 'markdown') {
-        this.activeGroupEl = active.containerEl?.closest('.workspace-tabs') ?? null;
-        this.activeLeafPath = active.view.file?.path ?? null;
+      const view = this.app.workspace.getActiveViewOfType(obsidian.MarkdownView);
+      if (view) {
+        this.activeGroupEl = view.containerEl?.closest('.workspace-tabs') ?? null;
+        this.activeLeafPath = view.file?.path ?? null;
       }
       this.update();
       // Graph renderers are initialised asynchronously after layout-ready.
       // Retry at increasing intervals to catch late-mounting graph leaves.
-      [500, 1500, 4000].forEach(ms => setTimeout(() => this.update(), ms));
+      [500, 1500, 4000].forEach(ms => {
+        const id = window.setTimeout(() => this.update(), ms);
+        this.register(() => window.clearTimeout(id));
+      });
     });
   }
 
   onunload() {
-    this.graphPanels.forEach(({ panel }) => panel.remove());
-    this.graphPanels = [];
+    // Deactivate the getters installed on PixiJS objects (they check _active),
+    // restore each node's original color/weight, and force one redraw so the
+    // graph returns to its normal appearance immediately.
+    this._active = false;
+    this.app.workspace.getLeavesOfType('graph').forEach(leaf => {
+      const renderer = leaf.view?.renderer;
+      if (!renderer?.nodes) return;
+      renderer.nodes.forEach(node => {
+        if (node._onhSaved) {
+          node.color = node._onhOrigColor;
+          node.weight = node._onhOrigWeight;
+          delete node._onhSaved; delete node._onhOrigColor; delete node._onhOrigWeight;
+        }
+      });
+      renderer.changed?.();
+    });
   }
 
   // ── Core update cycle ──────────────────────────────────────────────────────
 
   update() {
+    this._gen++; // invalidate the per-node/per-link status caches
     this.refreshOpenPaths();
     this.computeLinkedPaths();
     this.handleGraphLeaves();
@@ -269,7 +310,7 @@ class OpenNotesHighlight extends obsidian.Plugin {
     this.pinnedPaths.clear();
     const panelOnly = this.settings.scope === 'panel';
     this.app.workspace.iterateAllLeaves(leaf => {
-      if (leaf.view.getViewType() === 'markdown') {
+      if (leaf.view instanceof obsidian.MarkdownView) {
         const file = leaf.view.file;
         if (!file?.path) return;
         if (panelOnly && this.activeGroupEl) {
@@ -329,9 +370,11 @@ class OpenNotesHighlight extends obsidian.Plugin {
   // Attaches our renderer loop and injects the control panel for every open
   // graph leaf that hasn't been set up yet.
   handleGraphLeaves() {
+    this.liveRenderers = new Set();
     this.app.workspace.getLeavesOfType('graph').forEach(leaf => {
       const renderer = leaf.view?.renderer;
       if (!renderer) return;
+      this.liveRenderers.add(renderer);
       if (!this.patchedRenderers.has(renderer)) {
         this.patchedRenderers.add(renderer);
         this.attachToRenderer(renderer);
@@ -357,15 +400,23 @@ class OpenNotesHighlight extends obsidian.Plugin {
   // Returns 'pinned', 'open', 'linked-pinned', 'linked-open', or null for a
   // given graph node. The 'linked-*' statuses only occur when highlightLinked
   // is enabled and the node is not itself open/pinned.
+  //
+  // This runs several times per node per frame (worldAlpha/worldTransform
+  // getters plus applyToNode), so the result is cached on the node and only
+  // recomputed when update() bumps the generation counter.
   getNodeStatus(node) {
-    if (!this.settings.enabled || !node?.id) return null;
-    if (this._pathMatches(this.pinnedPaths, node.id)) return 'pinned';
-    if (this._pathMatches(this.openPaths, node.id)) return 'open';
-    if (this.settings.highlightLinked) {
+    if (!this._active || !this.settings.enabled || !node?.id) return null;
+    if (node._onhGen === this._gen) return node._onhStatus;
+    let status = null;
+    if (this._pathMatches(this.pinnedPaths, node.id)) status = 'pinned';
+    else if (this._pathMatches(this.openPaths, node.id)) status = 'open';
+    else if (this.settings.highlightLinked) {
       const kind = this._linkedKind(node.id);
-      if (kind) return `linked-${kind}`;
+      if (kind) status = `linked-${kind}`;
     }
-    return null;
+    node._onhGen = this._gen;
+    node._onhStatus = status;
+    return status;
   }
 
   // Only 'pinned' and 'open' nodes get the enlarged size — linked notes stay
@@ -408,7 +459,7 @@ class OpenNotesHighlight extends obsidian.Plugin {
     try {
       Object.defineProperty(circle, 'worldAlpha', {
         get() {
-          if (!plugin.settings.enabled || (plugin.openPaths.size === 0 && plugin.pinnedPaths.size === 0)) return _worldAlpha;
+          if (!plugin._active || !plugin.settings.enabled || (plugin.openPaths.size === 0 && plugin.pinnedPaths.size === 0)) return _worldAlpha;
           const status = plugin.getNodeStatus(node);
           if (status === 'pinned' || status === 'open') return 1;
           if (status === 'linked-pinned' || status === 'linked-open') return plugin.settings.linkedOpacity;
@@ -435,7 +486,7 @@ class OpenNotesHighlight extends obsidian.Plugin {
         try {
           Object.defineProperty(wt, k, {
             get() {
-              if (plugin.settings.enabled && plugin.isSizedNode(node)) {
+              if (plugin._active && plugin.settings.enabled && plugin.isSizedNode(node)) {
                 return val * plugin.settings.sizeMult;
               }
               return val;
@@ -451,12 +502,18 @@ class OpenNotesHighlight extends obsidian.Plugin {
 
   // Returns 'pinned' or 'open' if either endpoint of the link is a pinned or
   // open note (pinned takes priority), or null if neither endpoint matches.
+  // Cached per link per generation, like getNodeStatus — the _tintRGB and
+  // worldAlpha getters call this every frame for every edge.
   getLinkColorKind(link) {
+    if (link._onhGen === this._gen) return link._onhKind;
     const srcId = link.source?.id;
     const tgtId = link.target?.id;
-    if (this._pathMatches(this.pinnedPaths, srcId) || this._pathMatches(this.pinnedPaths, tgtId)) return 'pinned';
-    if (this._pathMatches(this.openPaths, srcId) || this._pathMatches(this.openPaths, tgtId)) return 'open';
-    return null;
+    let kind = null;
+    if (this._pathMatches(this.pinnedPaths, srcId) || this._pathMatches(this.pinnedPaths, tgtId)) kind = 'pinned';
+    else if (this._pathMatches(this.openPaths, srcId) || this._pathMatches(this.openPaths, tgtId)) kind = 'open';
+    link._onhGen = this._gen;
+    link._onhKind = kind;
+    return kind;
   }
 
   // Patches the PixiJS sprite (link.line) used to draw an edge so that edges
@@ -492,7 +549,7 @@ class OpenNotesHighlight extends obsidian.Plugin {
     }
 
     const overrideColor = () => {
-      if (!plugin.settings.enabled || !plugin.settings.highlightEdges) return null;
+      if (!plugin._active || !plugin.settings.enabled || !plugin.settings.highlightEdges) return null;
       const kind = plugin.getLinkColorKind(link);
       if (!kind) return null;
       return plugin.hexToInt(kind === 'pinned' ? plugin.settings.pinnedColor : plugin.settings.color);
@@ -584,6 +641,13 @@ class OpenNotesHighlight extends obsidian.Plugin {
     const plugin = this;
     let frameId;
     const loop = () => {
+      // Stop looping once the renderer's graph leaf is gone (liveRenderers is
+      // rebuilt on every update, and closing a leaf fires layout-change).
+      // Removing it from patchedRenderers releases our reference to it.
+      if (!plugin.liveRenderers.has(renderer)) {
+        plugin.patchedRenderers.delete(renderer);
+        return;
+      }
       const nodes = renderer.nodes;
       if (nodes) nodes.forEach(node => plugin.applyToNode(node));
       const links = renderer.links;
@@ -598,215 +662,91 @@ class OpenNotesHighlight extends obsidian.Plugin {
 
   // Injects a floating control panel into a graph leaf's container element.
   // The panel is appended once per leaf and removed when the plugin unloads.
+  // All static styling lives in styles.css (onh-* classes) so themes and
+  // snippets can override it; JS only toggles state classes (is-collapsed,
+  // onh-left, is-active).
   injectGraphPanel(leaf) {
     const container = leaf.view.containerEl;
     if (container.querySelector('.onh-panel')) return;
 
-    const panel = document.createElement('div');
-    panel.className = 'onh-panel';
-    panel.style.cssText = [
-      'position:absolute', 'bottom:100px', 'z-index:100',
-      'background:var(--background-secondary)',
-      'border:1px solid var(--background-modifier-border)',
-      'box-shadow:0 2px 8px rgba(0,0,0,0.25)',
-      'font-size:12px', 'display:flex', 'flex-direction:column',
-    ].join(';');
-
-    let collapsed = false;
+    container.classList.add('onh-graph-container');
+    const panel = container.createDiv({ cls: 'onh-panel' });
 
     // Keeps the panel out of the way of Obsidian's own graph controls panel
     // (.graph-controls), which slides in from the right side of the graph view.
-    // When collapsed the panel is always pinned to the left edge.
+    // When collapsed the panel is always pinned to the left edge (see CSS).
     const reposition = () => {
-      if (collapsed) { panel.style.left = '0'; panel.style.right = ''; return; }
       const gc = container.querySelector('.graph-controls');
-      const settingsOpen = gc && gc.offsetWidth > 0;
-      panel.style.right = settingsOpen ? '' : '10px';
-      panel.style.left = settingsOpen ? '10px' : '';
+      panel.classList.toggle('onh-left', !!(gc && gc.offsetWidth > 0));
     };
     // MutationObserver fires whenever the graph controls panel is shown or
     // hidden (class / style / childList change inside the container).
     const observer = new MutationObserver(reposition);
     observer.observe(container, { childList: true, subtree: true, attributes: true, attributeFilter: ['class', 'style'] });
 
-    // ── Collapsed state: slim tab pinned to the left edge ──
-    // When collapsed the panel becomes a 26 px-wide strip with no left border
-    // so it appears to emerge from the container's left wall.
-    const tabEl = document.createElement('div');
-    tabEl.textContent = '▶';
-    tabEl.style.cssText = 'display:none;align-items:center;justify-content:center;cursor:pointer;color:var(--text-muted);font-size:11px;padding:10px 0;user-select:none;';
-    tabEl.addEventListener('click', () => setCollapsed(false));
-    panel.appendChild(tabEl);
-
-    // ── Expanded state: full panel with title row and content ──
-    const titleRow = document.createElement('div');
-    titleRow.style.cssText = 'display:flex;align-items:center;justify-content:space-between;cursor:pointer;padding:10px 12px 0;';
-    const titleLbl = document.createElement('span');
-    titleLbl.textContent = 'Highlight';
-    titleLbl.style.cssText = 'font-weight:500;color:var(--text-normal);user-select:none;';
-    const collapseArrow = document.createElement('span');
-    collapseArrow.textContent = '◀';
-    collapseArrow.style.cssText = 'font-size:9px;color:var(--text-muted);user-select:none;';
-    titleRow.appendChild(titleLbl);
-    titleRow.appendChild(collapseArrow);
-    titleRow.addEventListener('click', () => setCollapsed(true));
-    panel.appendChild(titleRow);
-
-    const contentEl = document.createElement('div');
-    contentEl.style.cssText = 'display:flex;flex-direction:column;gap:8px;padding:8px 12px 10px;margin-top:6px;border-top:1px solid var(--background-modifier-border);';
-    panel.appendChild(contentEl);
-
-    const setCollapsed = (val) => {
-      collapsed = val;
-      if (collapsed) {
-        panel.style.minWidth = '';
-        panel.style.width = '26px';
-        panel.style.padding = '0';
-        panel.style.borderRadius = '0 6px 6px 0';
-        panel.style.borderLeft = 'none'; // flush with the container edge
-        tabEl.style.display = 'flex';
-        titleRow.style.display = 'none';
-        contentEl.style.display = 'none';
-      } else {
-        panel.style.width = '';
-        panel.style.minWidth = '190px';
-        panel.style.padding = '0';
-        panel.style.borderRadius = '6px';
-        panel.style.borderLeft = '';
-        tabEl.style.display = 'none';
-        titleRow.style.display = 'flex';
-        contentEl.style.display = 'flex';
-      }
+    const setCollapsed = val => {
+      panel.classList.toggle('is-collapsed', val);
       reposition();
     };
 
-    setCollapsed(false); // start expanded
+    // Collapsed state: slim tab pinned to the left edge; the expanded parts
+    // (title row + content) are hidden via CSS while is-collapsed is set.
+    const tabEl = panel.createDiv({ cls: 'onh-tab', text: '▶' });
+    tabEl.addEventListener('click', () => setCollapsed(false));
+
+    const titleRow = panel.createDiv({ cls: 'onh-title-row' });
+    titleRow.createSpan({ cls: 'onh-title', text: 'Highlight' });
+    titleRow.createSpan({ cls: 'onh-collapse-arrow', text: '◀' });
+    titleRow.addEventListener('click', () => setCollapsed(true));
+
+    const contentEl = panel.createDiv({ cls: 'onh-content' });
+
+    reposition();
 
     // ── Control rows ──
 
-    const enableRow = document.createElement('div');
-    enableRow.style.cssText = 'display:flex;align-items:center;justify-content:space-between;';
-    const enableLbl = document.createElement('span');
-    enableLbl.textContent = 'Enable';
-    enableLbl.style.color = 'var(--text-muted)';
-    const enableToggle = document.createElement('input');
-    enableToggle.type = 'checkbox';
-    enableToggle.checked = this.settings.enabled;
-    enableToggle.style.cssText = 'width:16px;height:16px;cursor:pointer;';
-    enableToggle.addEventListener('change', async e => {
-      this.settings.enabled = e.target.checked;
-      await this.saveSettings();
+    const enableToggle = this._toggleRow(contentEl, 'Enable', '', this.settings.enabled, async v => {
+      this.settings.enabled = v; await this.saveSettings();
     });
-    enableRow.appendChild(enableLbl);
-    enableRow.appendChild(enableToggle);
-    contentEl.appendChild(enableRow);
 
-    const scopeRow = document.createElement('div');
-    scopeRow.style.cssText = 'display:flex;align-items:center;justify-content:space-between;padding-bottom:4px;border-bottom:1px solid var(--background-modifier-border);';
-    const scopeLbl = document.createElement('span');
-    scopeLbl.textContent = 'Active panel only';
-    scopeLbl.style.color = 'var(--text-muted)';
-    const scopeToggle = document.createElement('input');
-    scopeToggle.type = 'checkbox';
-    scopeToggle.checked = this.settings.scope === 'panel';
-    scopeToggle.style.cssText = 'width:16px;height:16px;cursor:pointer;';
-    scopeToggle.addEventListener('change', async e => {
-      this.settings.scope = e.target.checked ? 'panel' : 'all';
-      await this.saveSettings();
+    const scopeToggle = this._toggleRow(contentEl, 'Active panel only', 'onh-row-bb', this.settings.scope === 'panel', async v => {
+      this.settings.scope = v ? 'panel' : 'all'; await this.saveSettings();
     });
-    scopeRow.appendChild(scopeLbl);
-    scopeRow.appendChild(scopeToggle);
-    contentEl.appendChild(scopeRow);
 
-    const colorRow = document.createElement('div');
-    colorRow.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:8px;';
-    const colorLbl = document.createElement('span');
-    colorLbl.textContent = 'Open';
-    colorLbl.style.color = 'var(--text-muted)';
-    const colorInput = document.createElement('input');
-    colorInput.type = 'color';
-    colorInput.value = this.settings.color;
-    colorInput.style.cssText = 'width:36px;height:22px;padding:0;border:none;cursor:pointer;background:none;';
-    colorInput.addEventListener('input', e => { this.settings.color = e.target.value; });
-    colorInput.addEventListener('change', async e => { this.settings.color = e.target.value; await this.saveSettings(); });
-    colorRow.appendChild(colorLbl);
-    colorRow.appendChild(colorInput);
-    contentEl.appendChild(colorRow);
+    const colorInput = this._colorRow(contentEl, 'Open', this.settings.color, v => {
+      this.settings.color = v;
+    });
 
-    const pinnedColorRow = document.createElement('div');
-    pinnedColorRow.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:8px;';
-    const pinnedColorLbl = document.createElement('span');
-    pinnedColorLbl.textContent = 'Pinned';
-    pinnedColorLbl.style.color = 'var(--text-muted)';
-    const pinnedColorInput = document.createElement('input');
-    pinnedColorInput.type = 'color';
-    pinnedColorInput.value = this.settings.pinnedColor;
-    pinnedColorInput.style.cssText = 'width:36px;height:22px;padding:0;border:none;cursor:pointer;background:none;';
-    pinnedColorInput.addEventListener('input', e => { this.settings.pinnedColor = e.target.value; });
-    pinnedColorInput.addEventListener('change', async e => { this.settings.pinnedColor = e.target.value; await this.saveSettings(); });
-    pinnedColorRow.appendChild(pinnedColorLbl);
-    pinnedColorRow.appendChild(pinnedColorInput);
-    contentEl.appendChild(pinnedColorRow);
+    const pinnedColorInput = this._colorRow(contentEl, 'Pinned', this.settings.pinnedColor, v => {
+      this.settings.pinnedColor = v;
+    });
 
     const SIZE_STEPS = [1, 1.2, 1.5, 1.8, 2, 2.5, 3, 3.5, 4, 5];
     const DIM_STEPS  = [0, 0.05, 0.1, 0.15, 0.2, 0.3, 0.5, 0.65, 0.8, 1];
 
-    const sizeRow = this._stepRow('Size ×', SIZE_STEPS, this.settings.sizeMult, async v => {
+    const sizeRow = this._stepRow(contentEl, 'Size ×', SIZE_STEPS, this.settings.sizeMult, async v => {
       this.settings.sizeMult = v; await this.saveSettings();
     });
-    contentEl.appendChild(sizeRow.el);
 
-    const dimRow = this._stepRow('Dim', DIM_STEPS, this.settings.dimOpacity, async v => {
+    const dimRow = this._stepRow(contentEl, 'Dim', DIM_STEPS, this.settings.dimOpacity, async v => {
       this.settings.dimOpacity = v; await this.saveSettings();
     });
-    contentEl.appendChild(dimRow.el);
 
-    const linkedRow = document.createElement('div');
-    linkedRow.style.cssText = 'display:flex;align-items:center;justify-content:space-between;padding-top:4px;border-top:1px solid var(--background-modifier-border);';
-    const linkedLbl = document.createElement('span');
-    linkedLbl.textContent = 'Highlight linked';
-    linkedLbl.style.color = 'var(--text-muted)';
-    const linkedToggle = document.createElement('input');
-    linkedToggle.type = 'checkbox';
-    linkedToggle.checked = this.settings.highlightLinked;
-    linkedToggle.style.cssText = 'width:16px;height:16px;cursor:pointer;';
-    linkedToggle.addEventListener('change', async e => {
-      this.settings.highlightLinked = e.target.checked;
-      await this.saveSettings();
+    const linkedToggle = this._toggleRow(contentEl, 'Highlight linked', 'onh-row-bt', this.settings.highlightLinked, async v => {
+      this.settings.highlightLinked = v; await this.saveSettings();
     });
-    linkedRow.appendChild(linkedLbl);
-    linkedRow.appendChild(linkedToggle);
-    contentEl.appendChild(linkedRow);
 
-    const linkedOpacityRow = this._stepRow('Link α', DIM_STEPS, this.settings.linkedOpacity, async v => {
+    const linkedOpacityRow = this._stepRow(contentEl, 'Link α', DIM_STEPS, this.settings.linkedOpacity, async v => {
       this.settings.linkedOpacity = v; await this.saveSettings();
     });
-    contentEl.appendChild(linkedOpacityRow.el);
 
-    const edgesRow = document.createElement('div');
-    edgesRow.style.cssText = 'display:flex;align-items:center;justify-content:space-between;';
-    const edgesLbl = document.createElement('span');
-    edgesLbl.textContent = 'Highlight edges';
-    edgesLbl.style.color = 'var(--text-muted)';
-    const edgesToggle = document.createElement('input');
-    edgesToggle.type = 'checkbox';
-    edgesToggle.checked = this.settings.highlightEdges;
-    edgesToggle.style.cssText = 'width:16px;height:16px;cursor:pointer;';
-    edgesToggle.addEventListener('change', async e => {
-      this.settings.highlightEdges = e.target.checked;
-      await this.saveSettings();
+    const edgesToggle = this._toggleRow(contentEl, 'Highlight edges', '', this.settings.highlightEdges, async v => {
+      this.settings.highlightEdges = v; await this.saveSettings();
     });
-    edgesRow.appendChild(edgesLbl);
-    edgesRow.appendChild(edgesToggle);
-    contentEl.appendChild(edgesRow);
 
-    const edgeOpacityRow = this._stepRow('Edge α', DIM_STEPS, this.settings.edgeOpacity, async v => {
+    const edgeOpacityRow = this._stepRow(contentEl, 'Edge α', DIM_STEPS, this.settings.edgeOpacity, async v => {
       this.settings.edgeOpacity = v; await this.saveSettings();
     });
-    contentEl.appendChild(edgeOpacityRow.el);
-
-    container.style.position = 'relative';
-    container.appendChild(panel);
 
     this.graphPanels.push({
       panel, enableToggle, scopeToggle, colorInput, pinnedColorInput, linkedToggle, edgesToggle,
@@ -816,54 +756,66 @@ class OpenNotesHighlight extends obsidian.Plugin {
     this.register(() => {
       observer.disconnect();
       panel.remove();
+      container.classList.remove('onh-graph-container');
       this.graphPanels = this.graphPanels.filter(p => p.panel !== panel);
     });
   }
 
-  // Builds a row of discrete step buttons (used for Size and Dim in the panel).
-  // Returns { el, update(value) } so the row can be synced when settings change.
-  _stepRow(label, steps, currentValue, onSelect) {
-    const wrapper = document.createElement('div');
-    wrapper.style.cssText = 'display:flex;flex-direction:column;gap:3px;';
-    const top = document.createElement('div');
-    top.style.cssText = 'display:flex;justify-content:space-between;align-items:center;';
-    const lbl = document.createElement('span');
-    lbl.textContent = label;
-    lbl.style.color = 'var(--text-muted)';
-    const valDisplay = document.createElement('span');
-    valDisplay.style.cssText = 'font-size:11px;min-width:28px;text-align:right;color:var(--text-muted);';
-    top.appendChild(lbl);
-    top.appendChild(valDisplay);
-    wrapper.appendChild(top);
+  // Builds a label + checkbox row. extraCls adds a divider variant
+  // (onh-row-bb / onh-row-bt). Returns the checkbox element for syncPanels.
+  _toggleRow(parent, label, extraCls, value, onChange) {
+    const row = parent.createDiv({ cls: extraCls ? `onh-row ${extraCls}` : 'onh-row' });
+    row.createSpan({ cls: 'onh-label', text: label });
+    const input = row.createEl('input', { cls: 'onh-checkbox', type: 'checkbox' });
+    input.checked = value;
+    input.addEventListener('change', e => onChange(e.target.checked));
+    return input;
+  }
 
-    const btnRow = document.createElement('div');
-    btnRow.style.cssText = 'display:flex;gap:2px;';
+  // Builds a label + color-picker row. onSet is called live while dragging
+  // ('input', applied by the rAF loop without saving); the final 'change'
+  // additionally persists. Returns the input element for syncPanels.
+  _colorRow(parent, label, value, onSet) {
+    const row = parent.createDiv({ cls: 'onh-row' });
+    row.createSpan({ cls: 'onh-label', text: label });
+    const input = row.createEl('input', { cls: 'onh-color', type: 'color' });
+    input.value = value;
+    input.addEventListener('input', e => onSet(e.target.value));
+    input.addEventListener('change', async e => { onSet(e.target.value); await this.saveSettings(); });
+    return input;
+  }
+
+  // Builds a row of discrete step buttons (used for the numeric values in the
+  // panel). Returns { update(value) } so the row can be synced when settings change.
+  _stepRow(parent, label, steps, currentValue, onSelect) {
+    const wrapper = parent.createDiv({ cls: 'onh-steprow' });
+    const top = wrapper.createDiv({ cls: 'onh-steprow-top' });
+    top.createSpan({ cls: 'onh-label', text: label });
+    const valDisplay = top.createSpan({ cls: 'onh-step-val' });
+
+    const btnRow = wrapper.createDiv({ cls: 'onh-step-btns' });
     const buttons = steps.map(step => {
-      const btn = document.createElement('button');
-      btn.style.cssText = 'flex:1;height:10px;border:none;border-radius:2px;cursor:pointer;padding:0;';
+      const btn = btnRow.createEl('button', { cls: 'onh-step-btn' });
       btn.addEventListener('click', () => onSelect(step));
-      btnRow.appendChild(btn);
       return { btn, step };
     });
-    wrapper.appendChild(btnRow);
 
     const update = value => {
       const nearest = steps.reduce((a, b) => Math.abs(b - value) < Math.abs(a - value) ? b : a);
-      valDisplay.textContent = nearest;
-      buttons.forEach(({ btn, step }) => {
-        btn.style.background = step === nearest
-          ? 'var(--interactive-accent)'
-          : 'var(--background-modifier-border)';
-      });
+      valDisplay.textContent = String(nearest);
+      buttons.forEach(({ btn, step }) => btn.classList.toggle('is-active', step === nearest));
     };
     update(currentValue);
-    return { el: wrapper, update };
+    return { update };
   }
 
   // Pushes current settings values into all open in-graph panels.
   // Called after any settings change so panels stay in sync even when the
   // change came from the settings tab rather than the panel itself.
   syncPanels() {
+    // Drop entries whose panel left the DOM (its graph leaf was closed) so we
+    // don't keep dead elements alive until the plugin unloads.
+    this.graphPanels = this.graphPanels.filter(p => p.panel.isConnected);
     for (const { enableToggle, scopeToggle, colorInput, pinnedColorInput, linkedToggle, edgesToggle, updateSize, updateDim, updateLinkedOpacity, updateEdgeOpacity } of this.graphPanels) {
       enableToggle.checked = this.settings.enabled;
       scopeToggle.checked = this.settings.scope === 'panel';
