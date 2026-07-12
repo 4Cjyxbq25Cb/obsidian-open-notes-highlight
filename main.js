@@ -34,11 +34,11 @@ const DEFAULTS = {
   enabled: true,         // whether highlighting is active at all
   color: '#e06c75',      // highlight color for open (non-pinned) notes
   pinnedColor: '#61afef',// highlight color for pinned notes
-  sizeMult: 2,           // multiplier applied to the graph's own node size
-  dimOpacity: 0.15,      // opacity applied to non-highlighted nodes
+  sizeMult: 1,           // multiplier applied to the graph's own node size
+  dimOpacity: 1,         // opacity applied to non-highlighted nodes
   scope: 'all',          // 'all' = every panel, 'panel' = active panel only
   highlightLinked: false,// whether notes linked to an open/pinned note get tinted too
-  linkedOpacity: 0.5,    // worldAlpha used for linked notes (open/pinned notes always use 1)
+  linkedOpacity: 1,      // worldAlpha used for linked notes (open/pinned notes always use 1)
   highlightEdges: false, // whether edges touching an open/pinned note get tinted in its color
   edgeOpacity: 1,        // worldAlpha used for highlighted edges
 };
