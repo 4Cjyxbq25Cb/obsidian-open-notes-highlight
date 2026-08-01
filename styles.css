@@ -2,7 +2,8 @@
    State classes toggled from main.js:
      .is-collapsed  panel folded into a slim tab on the left edge
      .onh-left      panel moved left while Obsidian's graph controls are open
-     .is-active     currently selected step button */
+     .is-active     currently selected step button
+     .onh-hidden    row hidden because it doesn't apply to the current scope */
 
 .onh-graph-container {
   position: relative;
@@ -99,6 +100,18 @@
   border-bottom: 1px solid var(--background-modifier-border);
 }
 
+/* Wraps rows that belong together (scope + its workspace picker) so a divider
+   can sit below the whole group rather than between its rows. */
+.onh-group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.onh-hidden {
+  display: none;
+}
+
 .onh-row-bt {
   padding-top: 4px;
   border-top: 1px solid var(--background-modifier-border);
@@ -112,6 +125,20 @@
   width: 16px;
   height: 16px;
   cursor: pointer;
+}
+
+/* Constrained so a long workspace name can't stretch the panel; the full name
+   stays available via the native dropdown and the title attribute. */
+.onh-select {
+  max-width: 110px;
+  height: 22px;
+  padding: 0 4px;
+  font-size: 11px;
+  cursor: pointer;
+  color: var(--text-normal);
+  background: var(--background-primary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 4px;
 }
 
 .onh-color {

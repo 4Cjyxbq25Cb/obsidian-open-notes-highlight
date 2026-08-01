@@ -36,7 +36,10 @@ const DEFAULTS = {
   pinnedColor: '#61afef',// highlight color for pinned notes
   sizeMult: 1,           // multiplier applied to the graph's own node size
   dimOpacity: 1,         // opacity applied to non-highlighted nodes
-  scope: 'all',          // 'all' = every panel, 'panel' = active panel only
+  scope: 'all',          // 'all' = every panel, 'panel' = active panel only,
+                         // 'workspace' = notes stored in a saved workspace layout
+  workspaceName: '',     // which saved workspace to read when scope is 'workspace'
+                         // (empty = the workspaces plugin's currently active one)
   highlightLinked: false,// whether notes linked to an open/pinned note get tinted too
   linkedOpacity: 1,      // worldAlpha used for linked notes (open/pinned notes always use 1)
   highlightEdges: false, // whether edges touching an open/pinned note get tinted in its color
@@ -69,17 +72,46 @@ class SettingsTab extends obsidian.PluginSettingTab {
 
     new obsidian.Setting(containerEl)
       .setName('Scope')
-      .setDesc('Which panels to highlight notes from')
+      .setDesc('Which notes count as "open": those in every panel, only those in the active panel, or those stored in a saved workspace layout')
       .addDropdown(drop =>
         drop
           .addOption('all', 'All panels')
           .addOption('panel', 'Active panel only')
+          .addOption('workspace', 'Saved workspace')
           .setValue(this.plugin.settings.scope)
           .onChange(async value => {
             this.plugin.settings.scope = value;
             await this.plugin.saveSettings();
+            this.display(); // show or hide the workspace picker below
           })
       );
+
+    // Only meaningful in workspace scope, so it is rendered conditionally
+    // rather than left visible but inert.
+    if (this.plugin.settings.scope === 'workspace') {
+      const names = this.plugin.listWorkspaceNames();
+      const setting = new obsidian.Setting(containerEl).setName('Workspace');
+
+      if (names.length === 0) {
+        setting.setDesc(
+          this.plugin.workspacesApi()
+            ? 'No saved workspaces yet — save one from the Workspaces core plugin first.'
+            : 'The Workspaces core plugin is disabled. Enable it under Settings → Core plugins to use this scope.'
+        );
+      } else {
+        setting
+          .setDesc('Highlight the notes this workspace has open, without having to load it')
+          .addDropdown(drop => {
+            names.forEach(name => drop.addOption(name, name));
+            drop
+              .setValue(this.plugin.resolveWorkspaceName() ?? names[0])
+              .onChange(async value => {
+                this.plugin.settings.workspaceName = value;
+                await this.plugin.saveSettings();
+              });
+          });
+      }
+    }
 
     new obsidian.Setting(containerEl)
       .setName('Open note color')
@@ -203,6 +235,12 @@ class OpenNotesHighlight extends obsidian.Plugin {
     // for the brief moment when the containerEl is detached from the DOM.
     this.activeGroupEl = null;
     this.activeLeafPath = null;
+    // Cache for the parsed contents of a saved workspace layout, keyed by
+    // workspace name + its mtime so it is rebuilt only when the user actually
+    // saves that workspace. See refreshWorkspacePaths().
+    this._wsCacheKey = null;
+    this._wsCacheOpen = [];
+    this._wsCachePinned = [];
     // Tracks which renderers already have our rAF loop attached, so we never
     // attach twice to the same renderer instance.
     this.patchedRenderers = new WeakSet();
@@ -303,11 +341,113 @@ class OpenNotesHighlight extends obsidian.Plugin {
     this.syncPanels();
   }
 
+  // ── Saved workspaces ───────────────────────────────────────────────────────
+  //
+  // The Workspaces core plugin stores each saved workspace as a serialised
+  // layout tree in .obsidian/workspaces.json and exposes them in memory via
+  // its plugin instance. Reading those layouts lets us highlight the notes a
+  // workspace has open *without* loading it — the graph stays where it is and
+  // the user's current layout is untouched.
+  //
+  // This is unofficial API (app.internalPlugins), so every access is defensive:
+  // if the core plugin is disabled or its shape ever changes, the feature
+  // degrades to "no workspace found" instead of throwing.
+
+  // Returns the Workspaces core plugin instance, or null when the plugin is
+  // missing or disabled.
+  workspacesApi() {
+    const plugin = this.app.internalPlugins?.plugins?.workspaces;
+    if (!plugin?.enabled) return null;
+    const instance = plugin.instance;
+    return instance?.workspaces ? instance : null;
+  }
+
+  // Names of all saved workspaces, alphabetically sorted. Empty when the core
+  // plugin is unavailable or nothing has been saved yet.
+  listWorkspaceNames() {
+    const instance = this.workspacesApi();
+    if (!instance) return [];
+    return Object.keys(instance.workspaces).sort((a, b) => a.localeCompare(b));
+  }
+
+  // The workspace the user picked, falling back to whichever workspace the core
+  // plugin currently has loaded and then to the first saved one. The last
+  // fallback matters: the picker always displays *some* entry, so resolving to
+  // the same one keeps the displayed selection and the highlighted notes in
+  // agreement even before the user has chosen anything. Returns null only when
+  // no saved workspace exists at all.
+  resolveWorkspaceName() {
+    const instance = this.workspacesApi();
+    if (!instance) return null;
+    const chosen = this.settings.workspaceName;
+    if (chosen && instance.workspaces[chosen]) return chosen;
+    const active = instance.activeWorkspace;
+    if (active && instance.workspaces[active]) return active;
+    return this.listWorkspaceNames()[0] ?? null;
+  }
+
+  // Depth-first walk over a serialised layout tree, invoking visit() for every
+  // leaf. Layout nodes are 'split' / 'tabs' containers with a children array,
+  // or 'leaf' endpoints; the same shape is used for the main area and both
+  // sidebars.
+  _walkLayout(node, visit) {
+    if (!node || typeof node !== 'object') return;
+    if (node.type === 'leaf') { visit(node); return; }
+    if (Array.isArray(node.children)) {
+      for (const child of node.children) this._walkLayout(child, visit);
+    }
+  }
+
+  // Fills openPaths / pinnedPaths from the selected saved workspace.
+  //
+  // Only markdown leaves are considered, matching what the live-leaf path does
+  // (it filters on MarkdownView), so both scopes highlight the same kind of
+  // node. A leaf's pinned flag is preserved, so pinned notes keep their own
+  // color exactly as they do in the live scopes.
+  refreshWorkspacePaths() {
+    const name = this.resolveWorkspaceName();
+    if (!name) return;
+    const layout = this.workspacesApi().workspaces[name];
+
+    // Layouts only change when the user saves a workspace, which bumps mtime —
+    // so the walk result can be cached across the many update() calls that
+    // ordinary editing triggers.
+    const cacheKey = `${name}::${layout.mtime ?? 0}`;
+    if (this._wsCacheKey !== cacheKey) {
+      const open = [];
+      const pinned = [];
+      // Sidebars can hold markdown leaves too (e.g. a note dragged into the
+      // right split), so all three roots are walked.
+      for (const root of ['main', 'left', 'right']) {
+        this._walkLayout(layout[root], leaf => {
+          if (leaf.state?.type !== 'markdown') return;
+          const file = leaf.state?.state?.file;
+          if (!file) return;
+          (leaf.pinned || leaf.state?.pinned ? pinned : open).push(file);
+        });
+      }
+      this._wsCacheKey = cacheKey;
+      this._wsCacheOpen = open;
+      this._wsCachePinned = pinned;
+    }
+
+    for (const path of this._wsCacheOpen) this.openPaths.add(path);
+    // Pinned wins if the same file somehow appears as both.
+    for (const path of this._wsCachePinned) {
+      this.openPaths.delete(path);
+      this.pinnedPaths.add(path);
+    }
+  }
+
   // Rebuilds openPaths / pinnedPaths from all currently open markdown leaves,
   // respecting the configured scope.
   refreshOpenPaths() {
     this.openPaths.clear();
     this.pinnedPaths.clear();
+    if (this.settings.scope === 'workspace') {
+      this.refreshWorkspacePaths();
+      return;
+    }
     const panelOnly = this.settings.scope === 'panel';
     this.app.workspace.iterateAllLeaves(leaf => {
       if (leaf.view instanceof obsidian.MarkdownView) {
@@ -709,8 +849,21 @@ class OpenNotesHighlight extends obsidian.Plugin {
       this.settings.enabled = v; await this.saveSettings();
     });
 
-    const scopeToggle = this._toggleRow(contentEl, 'Active panel only', 'onh-row-bb', this.settings.scope === 'panel', async v => {
-      this.settings.scope = v ? 'panel' : 'all'; await this.saveSettings();
+    // Scope and its dependent workspace picker share one bordered group so the
+    // divider stays below both, whether or not the picker is visible.
+    const scopeGroup = contentEl.createDiv({ cls: 'onh-group onh-row-bb' });
+
+    const scopeSelect = this._selectRow(scopeGroup, 'Scope', [
+      { value: 'all', label: 'All panels' },
+      { value: 'panel', label: 'Active panel' },
+      { value: 'workspace', label: 'Workspace' },
+    ], this.settings.scope, async v => {
+      this.settings.scope = v;
+      await this.saveSettings(); // syncPanels() shows/hides the picker below
+    });
+
+    const workspaceSelect = this._selectRow(scopeGroup, 'Workspace', [], this.settings.workspaceName, async v => {
+      this.settings.workspaceName = v; await this.saveSettings();
     });
 
     const colorInput = this._colorRow(contentEl, 'Open', this.settings.color, v => {
@@ -749,7 +902,7 @@ class OpenNotesHighlight extends obsidian.Plugin {
     });
 
     this.graphPanels.push({
-      panel, enableToggle, scopeToggle, colorInput, pinnedColorInput, linkedToggle, edgesToggle,
+      panel, enableToggle, scopeSelect, workspaceSelect, colorInput, pinnedColorInput, linkedToggle, edgesToggle,
       updateSize: sizeRow.update, updateDim: dimRow.update, updateLinkedOpacity: linkedOpacityRow.update,
       updateEdgeOpacity: edgeOpacityRow.update,
     });
@@ -770,6 +923,37 @@ class OpenNotesHighlight extends obsidian.Plugin {
     input.checked = value;
     input.addEventListener('change', e => onChange(e.target.checked));
     return input;
+  }
+
+  // Builds a label + dropdown row. Returns { row, select, setOptions } —
+  // setOptions(options, current) rebuilds the option list only when it actually
+  // differs from what is already rendered, so the frequent syncPanels() calls
+  // don't tear down and rebuild an open dropdown under the user's cursor.
+  _selectRow(parent, label, options, value, onChange) {
+    const row = parent.createDiv({ cls: 'onh-row' });
+    row.createSpan({ cls: 'onh-label', text: label });
+    const select = row.createEl('select', { cls: 'onh-select' });
+
+    let signature = null;
+    const setOptions = (opts, current) => {
+      const next = opts.map(o => `${o.value}${o.label}`).join(' ');
+      if (next !== signature) {
+        signature = next;
+        select.empty();
+        for (const opt of opts) {
+          const el = select.createEl('option', { text: opt.label });
+          el.value = opt.value;
+        }
+      }
+      if (current != null) select.value = current;
+      // Fall back to the first entry when `current` isn't in the list (e.g. the
+      // saved workspace was renamed), so the control never shows blank.
+      if (select.selectedIndex < 0 && select.options.length > 0) select.selectedIndex = 0;
+    };
+
+    setOptions(options, value);
+    select.addEventListener('change', e => onChange(e.target.value));
+    return { row, select, setOptions };
   }
 
   // Builds a label + color-picker row. onSet is called live while dragging
@@ -816,9 +1000,21 @@ class OpenNotesHighlight extends obsidian.Plugin {
     // Drop entries whose panel left the DOM (its graph leaf was closed) so we
     // don't keep dead elements alive until the plugin unloads.
     this.graphPanels = this.graphPanels.filter(p => p.panel.isConnected);
-    for (const { enableToggle, scopeToggle, colorInput, pinnedColorInput, linkedToggle, edgesToggle, updateSize, updateDim, updateLinkedOpacity, updateEdgeOpacity } of this.graphPanels) {
+
+    // Computed once for all panels: the workspace list can change at any time
+    // (the user saves or deletes one) and is cheap but not free to build.
+    const inWorkspaceScope = this.settings.scope === 'workspace';
+    const workspaceNames = inWorkspaceScope ? this.listWorkspaceNames() : [];
+    const workspaceOptions = workspaceNames.length > 0
+      ? workspaceNames.map(name => ({ value: name, label: name }))
+      : [{ value: '', label: this.workspacesApi() ? 'None saved' : 'Plugin off' }];
+    const resolvedWorkspace = inWorkspaceScope ? this.resolveWorkspaceName() : null;
+
+    for (const { enableToggle, scopeSelect, workspaceSelect, colorInput, pinnedColorInput, linkedToggle, edgesToggle, updateSize, updateDim, updateLinkedOpacity, updateEdgeOpacity } of this.graphPanels) {
       enableToggle.checked = this.settings.enabled;
-      scopeToggle.checked = this.settings.scope === 'panel';
+      scopeSelect.select.value = this.settings.scope;
+      workspaceSelect.row.classList.toggle('onh-hidden', !inWorkspaceScope);
+      if (inWorkspaceScope) workspaceSelect.setOptions(workspaceOptions, resolvedWorkspace ?? '');
       colorInput.value = this.settings.color;
       pinnedColorInput.value = this.settings.pinnedColor;
       linkedToggle.checked = this.settings.highlightLinked;
