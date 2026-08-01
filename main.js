@@ -54,7 +54,121 @@ class SettingsTab extends obsidian.PluginSettingTab {
     this.plugin = plugin;
   }
 
+  // ── Declarative settings (Obsidian 1.13+) ──────────────────────────────────
+  //
+  // 1.13 introduced a declarative settings API: instead of building controls
+  // imperatively in display(), the tab describes them and Obsidian renders
+  // them. The payoff is that the settings become findable through the global
+  // settings search, which only indexes declared definitions.
+  //
+  // Both APIs are implemented side by side (the "dual support" pattern from
+  // the migration guide): 1.13+ renders from getSettingDefinitions(), older
+  // versions fall back to display(). display() therefore bails out early on
+  // 1.13+ so the tab isn't rendered twice.
+
+  // Settings live on the plugin's own `settings` object rather than being
+  // persisted per key by Obsidian, so reads and writes are routed through
+  // these overrides. Writing via saveSettings() keeps the side effects the
+  // rest of the plugin depends on: it re-runs update(), pushes the new values
+  // into every in-graph panel, and triggers a one-shot graph redraw.
+  getControlValue(key) {
+    // The picker always shows a concrete workspace, so report the resolved one
+    // rather than a possibly empty stored name (see resolveWorkspaceName).
+    if (key === 'workspaceName') return this.plugin.resolveWorkspaceName() ?? '';
+    return this.plugin.settings[key];
+  }
+
+  async setControlValue(key, value) {
+    this.plugin.settings[key] = value;
+    await this.plugin.saveSettings();
+  }
+
+  getSettingDefinitions() {
+    const names = this.plugin.listWorkspaceNames();
+    const workspaceOptions = {};
+    for (const name of names) workspaceOptions[name] = name;
+
+    let workspaceDesc = 'Highlight the notes this workspace has open, without having to load it';
+    if (names.length === 0) {
+      workspaceOptions[''] = this.plugin.workspacesApi() ? 'No saved workspaces' : 'Workspaces plugin disabled';
+      workspaceDesc = this.plugin.workspacesApi()
+        ? 'No saved workspaces yet — save one from the Workspaces core plugin first.'
+        : 'The Workspaces core plugin is disabled. Enable it under Settings → Core plugins to use this scope.';
+    }
+
+    return [
+      {
+        name: 'Enable',
+        desc: 'Toggle highlighting on or off',
+        control: { type: 'toggle', key: 'enabled' },
+      },
+      {
+        name: 'Scope',
+        desc: 'Which notes count as "open": those in every panel, only those in the active panel, or those stored in a saved workspace layout',
+        control: {
+          type: 'dropdown',
+          key: 'scope',
+          options: { all: 'All panels', panel: 'Active panel only', workspace: 'Saved workspace' },
+        },
+      },
+      {
+        name: 'Workspace',
+        desc: workspaceDesc,
+        visible: () => this.plugin.settings.scope === 'workspace',
+        control: { type: 'dropdown', key: 'workspaceName', options: workspaceOptions },
+      },
+      {
+        name: 'Open note color',
+        desc: 'Color used to highlight open notes in the graph',
+        control: { type: 'color', key: 'color' },
+      },
+      {
+        name: 'Pinned note color',
+        desc: 'Color used to highlight pinned notes in the graph',
+        control: { type: 'color', key: 'pinnedColor' },
+      },
+      {
+        name: 'Size multiplier',
+        desc: 'How much larger open notes appear relative to the graph\'s node size setting (1 = same size, 2 = twice as large)',
+        control: { type: 'slider', key: 'sizeMult', min: 1, max: 5, step: 0.2 },
+      },
+      {
+        name: 'Dim opacity',
+        desc: 'Opacity of non-open nodes (0 = invisible, 1 = normal)',
+        control: { type: 'slider', key: 'dimOpacity', min: 0, max: 1, step: 0.05 },
+      },
+      {
+        name: 'Highlight linked notes',
+        desc: 'Also tint notes that are directly linked to an open or pinned note, using the same color at reduced opacity so they stay distinguishable',
+        control: { type: 'toggle', key: 'highlightLinked' },
+      },
+      {
+        name: 'Linked note opacity',
+        desc: 'Color opacity used for linked notes (only relevant when "Highlight linked notes" is on)',
+        visible: () => this.plugin.settings.highlightLinked,
+        control: { type: 'slider', key: 'linkedOpacity', min: 0, max: 1, step: 0.05 },
+      },
+      {
+        name: 'Highlight edges',
+        desc: 'Tint edges connecting to an open or pinned note in that note\'s color, similar to Obsidian\'s native hover highlight',
+        control: { type: 'toggle', key: 'highlightEdges' },
+      },
+      {
+        name: 'Edge opacity',
+        desc: 'Opacity of highlighted edges (only relevant when "Highlight edges" is on)',
+        visible: () => this.plugin.settings.highlightEdges,
+        control: { type: 'slider', key: 'edgeOpacity', min: 0, max: 1, step: 0.05 },
+      },
+    ];
+  }
+
+  // ── Imperative settings (Obsidian < 1.13) ──────────────────────────────────
+
   display() {
+    // On 1.13+ the tab is rendered from getSettingDefinitions() above; building
+    // the controls here as well would show every setting twice.
+    if (obsidian.requireApiVersion?.('1.13.0')) return;
+
     const { containerEl } = this;
     containerEl.empty();
 

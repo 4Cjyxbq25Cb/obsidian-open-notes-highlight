@@ -28,11 +28,20 @@ saved workspace keep the pinned color, exactly as in the other scopes.
 Switch **Scope** back to `All panels` or `Active panel` at any time to return to
 highlighting the notes you actually have open.
 
+### Settings are now searchable (Obsidian 1.13+)
+
+On Obsidian 1.13 and later, this plugin's settings show up in the global settings
+search, so you can jump straight to "Dim opacity" or "Highlight edges" by typing
+instead of hunting for the plugin first. Nothing changes on older versions.
+
 ### Notes
 
 - The **Scope** control in the in-graph panel changed from an *Active panel only*
   checkbox to a dropdown with three options, to make room for the new mode. Your
   existing setting carries over unchanged.
+- Settings that only apply when another option is on — linked-note opacity and
+  edge opacity — are now hidden until you enable that option, instead of sitting
+  there inert.
 - If the Workspaces core plugin is disabled, or no workspace has been saved yet,
   the picker says so and nothing is highlighted — the other scopes are unaffected.
 - No changes to defaults, colors, or any existing behavior.
