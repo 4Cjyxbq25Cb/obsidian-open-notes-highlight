@@ -1,5 +1,24 @@
 # Changelog
 
+## 1.4.1
+
+Performance release — no changes to settings, defaults, or how highlighting looks.
+
+- **Smoother note switching in large graphs.** Open, pinned, and linked notes are
+  now looked up through an index instead of being searched node by node. On a
+  7,500-note test graph, the frame right after switching notes dropped from
+  about 140 ms to about 17 ms, which removes the visible hitch.
+- **One update per navigation.** Opening a note fires several workspace events
+  at once; they are now folded into a single update.
+- **Linked notes are recomputed only when needed** — when the set of open notes
+  or the vault's links change — and now also refresh as soon as you add or
+  remove a link, instead of at the next note switch.
+- **Less work per frame:** colors are parsed once per change, node color and
+  size are only written when they differ, edges are skipped while edge
+  highlighting is off, and the render loop idles while highlighting is disabled.
+
+---
+
 ## 1.4.0
 
 ### Highlight the notes of any saved workspace
