@@ -46,6 +46,10 @@ const DEFAULTS = {
   edgeOpacity: 1,        // worldAlpha used for highlighted edges
 };
 
+// Settings whose value shows or hides other settings; the imperative settings
+// tab re-renders when one of them changes.
+const RELAYOUT_KEYS = new Set(['scope', 'highlightLinked', 'highlightEdges']);
+
 // ─── Settings Tab ────────────────────────────────────────────────────────────
 
 class SettingsTab extends obsidian.PluginSettingTab {
@@ -163,6 +167,9 @@ class SettingsTab extends obsidian.PluginSettingTab {
   }
 
   // ── Imperative settings (Obsidian < 1.13) ──────────────────────────────────
+  //
+  // Built from the same definitions as the declarative tab, so each setting is
+  // described once and both code paths cannot drift apart.
 
   display() {
     // On 1.13+ the tab is rendered from getSettingDefinitions() above; building
@@ -172,164 +179,28 @@ class SettingsTab extends obsidian.PluginSettingTab {
     const { containerEl } = this;
     containerEl.empty();
 
-    new obsidian.Setting(containerEl)
-      .setName('Enable')
-      .setDesc('Toggle highlighting on or off')
-      .addToggle(toggle =>
-        toggle
-          .setValue(this.plugin.settings.enabled)
-          .onChange(async value => {
-            this.plugin.settings.enabled = value;
-            await this.plugin.saveSettings();
-          })
-      );
+    for (const def of this.getSettingDefinitions()) {
+      if (def.visible && !def.visible()) continue;
+      const { type, key } = def.control;
+      const value = this.getControlValue(key);
+      const onChange = async v => {
+        await this.setControlValue(key, v);
+        // These keys decide whether other settings are visible.
+        if (RELAYOUT_KEYS.has(key)) this.display();
+      };
+      const setting = new obsidian.Setting(containerEl).setName(def.name).setDesc(def.desc);
 
-    new obsidian.Setting(containerEl)
-      .setName('Scope')
-      .setDesc('Which notes count as "open": those in every panel, only those in the active panel, or those stored in a saved workspace layout')
-      .addDropdown(drop =>
-        drop
-          .addOption('all', 'All panels')
-          .addOption('panel', 'Active panel only')
-          .addOption('workspace', 'Saved workspace')
-          .setValue(this.plugin.settings.scope)
-          .onChange(async value => {
-            this.plugin.settings.scope = value;
-            await this.plugin.saveSettings();
-            this.display(); // show or hide the workspace picker below
-          })
-      );
-
-    // Only meaningful in workspace scope, so it is rendered conditionally
-    // rather than left visible but inert.
-    if (this.plugin.settings.scope === 'workspace') {
-      const names = this.plugin.listWorkspaceNames();
-      const setting = new obsidian.Setting(containerEl).setName('Workspace');
-
-      if (names.length === 0) {
-        setting.setDesc(
-          this.plugin.workspacesApi()
-            ? 'No saved workspaces yet — save one from the Workspaces core plugin first.'
-            : 'The Workspaces core plugin is disabled. Enable it under Settings → Core plugins to use this scope.'
-        );
-      } else {
-        setting
-          .setDesc('Highlight the notes this workspace has open, without having to load it')
-          .addDropdown(drop => {
-            names.forEach(name => drop.addOption(name, name));
-            drop
-              .setValue(this.plugin.resolveWorkspaceName() ?? names[0])
-              .onChange(async value => {
-                this.plugin.settings.workspaceName = value;
-                await this.plugin.saveSettings();
-              });
-          });
+      if (type === 'toggle') {
+        setting.addToggle(c => c.setValue(value).onChange(onChange));
+      } else if (type === 'color') {
+        setting.addColorPicker(c => c.setValue(value).onChange(onChange));
+      } else if (type === 'slider') {
+        const { min, max, step } = def.control;
+        setting.addSlider(c => c.setLimits(min, max, step).setValue(value).setDynamicTooltip().onChange(onChange));
+      } else if (type === 'dropdown') {
+        setting.addDropdown(c => c.addOptions(def.control.options).setValue(value).onChange(onChange));
       }
     }
-
-    new obsidian.Setting(containerEl)
-      .setName('Open note color')
-      .setDesc('Color used to highlight open notes in the graph')
-      .addColorPicker(picker =>
-        picker
-          .setValue(this.plugin.settings.color)
-          .onChange(async value => {
-            this.plugin.settings.color = value;
-            await this.plugin.saveSettings();
-          })
-      );
-
-    new obsidian.Setting(containerEl)
-      .setName('Pinned note color')
-      .setDesc('Color used to highlight pinned notes in the graph')
-      .addColorPicker(picker =>
-        picker
-          .setValue(this.plugin.settings.pinnedColor)
-          .onChange(async value => {
-            this.plugin.settings.pinnedColor = value;
-            await this.plugin.saveSettings();
-          })
-      );
-
-    new obsidian.Setting(containerEl)
-      .setName('Size multiplier')
-      .setDesc('How much larger open notes appear relative to the graph\'s node size setting (1 = same size, 2 = twice as large)')
-      .addSlider(slider =>
-        slider
-          .setLimits(1, 5, 0.2)
-          .setValue(this.plugin.settings.sizeMult)
-          .setDynamicTooltip()
-          .onChange(async value => {
-            this.plugin.settings.sizeMult = value;
-            await this.plugin.saveSettings();
-          })
-      );
-
-    new obsidian.Setting(containerEl)
-      .setName('Dim opacity')
-      .setDesc('Opacity of non-open nodes (0 = invisible, 1 = normal)')
-      .addSlider(slider =>
-        slider
-          .setLimits(0.0, 1.0, 0.05)
-          .setValue(this.plugin.settings.dimOpacity)
-          .setDynamicTooltip()
-          .onChange(async value => {
-            this.plugin.settings.dimOpacity = value;
-            await this.plugin.saveSettings();
-          })
-      );
-
-    new obsidian.Setting(containerEl)
-      .setName('Highlight linked notes')
-      .setDesc('Also tint notes that are directly linked to an open or pinned note, using the same color at reduced opacity so they stay distinguishable')
-      .addToggle(toggle =>
-        toggle
-          .setValue(this.plugin.settings.highlightLinked)
-          .onChange(async value => {
-            this.plugin.settings.highlightLinked = value;
-            await this.plugin.saveSettings();
-          })
-      );
-
-    new obsidian.Setting(containerEl)
-      .setName('Linked note opacity')
-      .setDesc('Color opacity used for linked notes (only relevant when "Highlight linked notes" is on)')
-      .addSlider(slider =>
-        slider
-          .setLimits(0.0, 1.0, 0.05)
-          .setValue(this.plugin.settings.linkedOpacity)
-          .setDynamicTooltip()
-          .onChange(async value => {
-            this.plugin.settings.linkedOpacity = value;
-            await this.plugin.saveSettings();
-          })
-      );
-
-    new obsidian.Setting(containerEl)
-      .setName('Highlight edges')
-      .setDesc('Tint edges connecting to an open or pinned note in that note\'s color, similar to Obsidian\'s native hover highlight')
-      .addToggle(toggle =>
-        toggle
-          .setValue(this.plugin.settings.highlightEdges)
-          .onChange(async value => {
-            this.plugin.settings.highlightEdges = value;
-            await this.plugin.saveSettings();
-          })
-      );
-
-    new obsidian.Setting(containerEl)
-      .setName('Edge opacity')
-      .setDesc('Opacity of highlighted edges (only relevant when "Highlight edges" is on)')
-      .addSlider(slider =>
-        slider
-          .setLimits(0.0, 1.0, 0.05)
-          .setValue(this.plugin.settings.edgeOpacity)
-          .setDynamicTooltip()
-          .onChange(async value => {
-            this.plugin.settings.edgeOpacity = value;
-            await this.plugin.saveSettings();
-          })
-      );
   }
 }
 
@@ -344,6 +215,21 @@ class OpenNotesHighlight extends obsidian.Plugin {
     // only populated when settings.highlightLinked is on. Maps path -> 'pinned'
     // or 'open', i.e. which kind of note it is linked to (pinned takes priority).
     this.linkedPaths = new Map();
+    // Cache key for linkedPaths: the open/pinned sets plus _linksVersion, which
+    // the metadata cache bumps whenever links change. Lets update() skip the
+    // full scan over resolvedLinks when only focus moved. See computeLinkedPaths().
+    this._linkedCacheKey = null;
+    this._linksVersion = 0;
+    // Every key a graph node id can take, mapped to its status ('pinned',
+    // 'open', 'linked-pinned', 'linked-open'). Rebuilt by update(), so
+    // node lookups are a single Map.get instead of a scan. See buildStatusIndex().
+    this.statusIndex = new Map();
+    // Highlight colors as integers, parsed once per change instead of once per
+    // node (and per edge) per frame. See refreshColors().
+    this._colorInt = 0;
+    this._pinnedColorInt = 0;
+    // Pending coalesced update, see requestUpdate().
+    this._updateFrame = null;
     // Used for "active panel only" scope: the .workspace-tabs container element
     // of the most recently focused markdown leaf, plus its file path as a fallback
     // for the brief moment when the containerEl is detached from the DOM.
@@ -380,6 +266,13 @@ class OpenNotesHighlight extends obsidian.Plugin {
     return parseInt(hex.replace('#', ''), 16);
   }
 
+  // Re-parses the highlight colors. Called from update() and directly by the
+  // in-graph color pickers, which change the color live without saving.
+  refreshColors() {
+    this._colorInt = this.hexToInt(this.settings.color);
+    this._pinnedColorInt = this.hexToInt(this.settings.pinnedColor);
+  }
+
   // ── Lifecycle ──────────────────────────────────────────────────────────────
 
   async onload() {
@@ -395,8 +288,15 @@ class OpenNotesHighlight extends obsidian.Plugin {
       },
     });
 
-    this.registerEvent(this.app.workspace.on('layout-change', () => this.update()));
-    this.registerEvent(this.app.workspace.on('file-open', () => this.update()));
+    // A single navigation usually fires layout-change, file-open and
+    // active-leaf-change together; requestUpdate() folds them into one update.
+    this.registerEvent(this.app.workspace.on('layout-change', () => this.requestUpdate()));
+    this.registerEvent(this.app.workspace.on('file-open', () => this.requestUpdate()));
+    // Links changed somewhere in the vault: the linked-notes cache is stale.
+    this.registerEvent(this.app.metadataCache.on('resolved', () => {
+      this._linksVersion++;
+      if (this.settings.highlightLinked) this.requestUpdate();
+    }));
     // Note: querying the active view here instead of trusting the event's
     // leaf parameter — the parameter proved unreliable in earlier versions.
     this.registerEvent(this.app.workspace.on('active-leaf-change', () => {
@@ -407,7 +307,7 @@ class OpenNotesHighlight extends obsidian.Plugin {
         this.activeGroupEl = view.containerEl?.closest('.workspace-tabs') ?? null;
         this.activeLeafPath = view.file?.path ?? null;
       }
-      this.update();
+      this.requestUpdate();
     }));
 
     this.app.workspace.onLayoutReady(() => {
@@ -420,7 +320,7 @@ class OpenNotesHighlight extends obsidian.Plugin {
       // Graph renderers are initialised asynchronously after layout-ready.
       // Retry at increasing intervals to catch late-mounting graph leaves.
       [500, 1500, 4000].forEach(ms => {
-        const id = window.setTimeout(() => this.update(), ms);
+        const id = window.setTimeout(() => this.requestUpdate(), ms);
         this.register(() => window.clearTimeout(id));
       });
     });
@@ -431,16 +331,11 @@ class OpenNotesHighlight extends obsidian.Plugin {
     // restore each node's original color/weight, and force one redraw so the
     // graph returns to its normal appearance immediately.
     this._active = false;
+    if (this._updateFrame !== null) cancelAnimationFrame(this._updateFrame);
     this.app.workspace.getLeavesOfType('graph').forEach(leaf => {
       const renderer = leaf.view?.renderer;
       if (!renderer?.nodes) return;
-      renderer.nodes.forEach(node => {
-        if (node._onhSaved) {
-          node.color = node._onhOrigColor;
-          node.weight = node._onhOrigWeight;
-          delete node._onhSaved; delete node._onhOrigColor; delete node._onhOrigWeight;
-        }
-      });
+      renderer.nodes.forEach(node => this.restoreNode(node));
       renderer.changed?.();
     });
   }
@@ -448,11 +343,29 @@ class OpenNotesHighlight extends obsidian.Plugin {
   // ── Core update cycle ──────────────────────────────────────────────────────
 
   update() {
+    if (this._updateFrame !== null) {
+      cancelAnimationFrame(this._updateFrame);
+      this._updateFrame = null;
+    }
     this._gen++; // invalidate the per-node/per-link status caches
+    this.refreshColors();
     this.refreshOpenPaths();
     this.computeLinkedPaths();
+    this.buildStatusIndex();
     this.handleGraphLeaves();
     this.syncPanels();
+  }
+
+  // Schedules update() for the next frame, folding any further requests until
+  // then into the same run. Used for workspace events, which tend to arrive in
+  // bursts; saveSettings() still calls update() directly because it needs the
+  // result before triggering the redraw.
+  requestUpdate() {
+    if (this._updateFrame !== null) return;
+    this._updateFrame = requestAnimationFrame(() => {
+      this._updateFrame = null;
+      if (this._active) this.update();
+    });
   }
 
   // ── Saved workspaces ───────────────────────────────────────────────────────
@@ -589,9 +502,19 @@ class OpenNotesHighlight extends obsidian.Plugin {
   // wins over 'open' if a note is linked to both). No-op unless the
   // "highlight linked notes" setting is on.
   computeLinkedPaths() {
+    if (!this.settings.highlightLinked || (this.openPaths.size === 0 && this.pinnedPaths.size === 0)) {
+      this.linkedPaths.clear();
+      this._linkedCacheKey = null;
+      return;
+    }
+
+    // The scan below touches every link in the vault. Most updates only move
+    // focus without changing which notes are open, so skip it when neither the
+    // open/pinned sets nor the vault's links have changed since the last run.
+    const cacheKey = `${[...this.pinnedPaths].join('\n')}\0${[...this.openPaths].join('\n')}\0${this._linksVersion}`;
+    if (cacheKey === this._linkedCacheKey) return;
+    this._linkedCacheKey = cacheKey;
     this.linkedPaths.clear();
-    if (!this.settings.highlightLinked) return;
-    if (this.openPaths.size === 0 && this.pinnedPaths.size === 0) return;
 
     const classify = path => this.pinnedPaths.has(path) ? 'pinned' : this.openPaths.has(path) ? 'open' : null;
     const addLinked = (path, kind) => {
@@ -612,13 +535,27 @@ class OpenNotesHighlight extends obsidian.Plugin {
     }
   }
 
-  // Like _pathMatches, but for the path -> kind map used by linkedPaths.
-  _linkedKind(nodeId) {
-    if (this.linkedPaths.has(nodeId)) return this.linkedPaths.get(nodeId);
-    for (const [p, kind] of this.linkedPaths) {
-      if (p.endsWith('/' + nodeId)) return kind;
-    }
-    return null;
+  // Rebuilds statusIndex from the open, pinned and linked paths.
+  //
+  // Graph node IDs are typically the vault-relative file path, but can
+  // sometimes be just the trailing part without its folder prefix, so every
+  // suffix that starts after a '/' is indexed as well. Entries are added in
+  // priority order and the first one wins: pinned before open before linked,
+  // and among linked notes an exact path before a suffix — the order in which
+  // the sets used to be searched node by node.
+  buildStatusIndex() {
+    const index = new Map();
+    const setOnce = (key, status) => { if (!index.has(key)) index.set(key, status); };
+    const addSuffixes = (path, status) => {
+      for (let i = path.indexOf('/'); i !== -1; i = path.indexOf('/', i + 1)) {
+        setOnce(path.slice(i + 1), status);
+      }
+    };
+    for (const path of this.pinnedPaths) { setOnce(path, 'pinned'); addSuffixes(path, 'pinned'); }
+    for (const path of this.openPaths) { setOnce(path, 'open'); addSuffixes(path, 'open'); }
+    for (const [path, kind] of this.linkedPaths) setOnce(path, `linked-${kind}`);
+    for (const [path, kind] of this.linkedPaths) addSuffixes(path, `linked-${kind}`);
+    this.statusIndex = index;
   }
 
   // Attaches our renderer loop and injects the control panel for every open
@@ -639,35 +576,17 @@ class OpenNotesHighlight extends obsidian.Plugin {
 
   // ── Node matching ──────────────────────────────────────────────────────────
 
-  // Checks whether nodeId (as stored on a graph node) matches any path in the
-  // given Set. Graph node IDs are typically the vault-relative file path, but
-  // can sometimes be just the filename without its folder prefix, so we also
-  // check whether any stored path ends with '/<nodeId>'.
-  _pathMatches(paths, nodeId) {
-    if (paths.has(nodeId)) return true;
-    for (const p of paths) {
-      if (p.endsWith('/' + nodeId) || p === nodeId) return true;
-    }
-    return false;
-  }
-
   // Returns 'pinned', 'open', 'linked-pinned', 'linked-open', or null for a
   // given graph node. The 'linked-*' statuses only occur when highlightLinked
   // is enabled and the node is not itself open/pinned.
   //
   // This runs several times per node per frame (worldAlpha/worldTransform
   // getters plus applyToNode), so the result is cached on the node and only
-  // recomputed when update() bumps the generation counter.
+  // looked up again when update() bumps the generation counter.
   getNodeStatus(node) {
     if (!this._active || !this.settings.enabled || !node?.id) return null;
     if (node._onhGen === this._gen) return node._onhStatus;
-    let status = null;
-    if (this._pathMatches(this.pinnedPaths, node.id)) status = 'pinned';
-    else if (this._pathMatches(this.openPaths, node.id)) status = 'open';
-    else if (this.settings.highlightLinked) {
-      const kind = this._linkedKind(node.id);
-      if (kind) status = `linked-${kind}`;
-    }
+    const status = this.statusIndex.get(node.id) ?? null;
     node._onhGen = this._gen;
     node._onhStatus = status;
     return status;
@@ -760,11 +679,11 @@ class OpenNotesHighlight extends obsidian.Plugin {
   // worldAlpha getters call this every frame for every edge.
   getLinkColorKind(link) {
     if (link._onhGen === this._gen) return link._onhKind;
-    const srcId = link.source?.id;
-    const tgtId = link.target?.id;
+    const src = this.statusIndex.get(link.source?.id);
+    const tgt = this.statusIndex.get(link.target?.id);
     let kind = null;
-    if (this._pathMatches(this.pinnedPaths, srcId) || this._pathMatches(this.pinnedPaths, tgtId)) kind = 'pinned';
-    else if (this._pathMatches(this.openPaths, srcId) || this._pathMatches(this.openPaths, tgtId)) kind = 'open';
+    if (src === 'pinned' || tgt === 'pinned') kind = 'pinned';
+    else if (src === 'open' || tgt === 'open') kind = 'open';
     link._onhGen = this._gen;
     link._onhKind = kind;
     return kind;
@@ -806,7 +725,7 @@ class OpenNotesHighlight extends obsidian.Plugin {
       if (!plugin._active || !plugin.settings.enabled || !plugin.settings.highlightEdges) return null;
       const kind = plugin.getLinkColorKind(link);
       if (!kind) return null;
-      return plugin.hexToInt(kind === 'pinned' ? plugin.settings.pinnedColor : plugin.settings.color);
+      return kind === 'pinned' ? plugin._pinnedColorInt : plugin._colorInt;
     };
 
     let _tintRGB = line._tintRGB;
@@ -837,43 +756,43 @@ class OpenNotesHighlight extends obsidian.Plugin {
     } catch(e) {}
   }
 
+  // Puts back the color and weight a node had before we highlighted it.
+  restoreNode(node) {
+    if (!node._onhSaved) return;
+    node.color = node._onhOrigColor;
+    node.weight = node._onhOrigWeight;
+    delete node._onhSaved; delete node._onhOrigColor; delete node._onhOrigWeight;
+  }
+
   // Applies color, size, and circle patches to a single node every frame.
   applyToNode(node) {
     if (!node) return;
     this.patchNodeCircle(node);
-    if (!this.settings.enabled) {
-      if (node._onhSaved) {
-        node.color = node._onhOrigColor;
-        node.weight = node._onhOrigWeight;
-        delete node._onhSaved; delete node._onhOrigColor; delete node._onhOrigWeight;
-      }
+    const status = this.getNodeStatus(node); // null while disabled
+    if (!status) {
+      this.restoreNode(node);
       return;
     }
-    const status = this.getNodeStatus(node);
-    if (status) {
-      if (!node._onhSaved) {
-        node._onhSaved = true;
-        node._onhOrigColor = node.color;
-        node._onhOrigWeight = node.weight;
-      }
-      // 'linked-*' notes reuse the color of the note they're linked to; the
-      // reduced opacity that sets them apart is applied via worldAlpha
-      // (see patchNodeCircle), not here — node.color.a has no visible effect
-      // on the renderer, only its rgb component does.
-      const isPinnedTone = status === 'pinned' || status === 'linked-pinned';
-      const color = isPinnedTone ? this.settings.pinnedColor : this.settings.color;
-      node.color = { a: 1, rgb: this.hexToInt(color) };
-      // node.weight drives the node's physics body size and click target.
-      // Scale by sizeMult² so the physics body matches the visual size.
-      // Linked notes keep their original weight — only pinned/open are enlarged.
-      node.weight = this.isSizedNode(node)
-        ? (node._onhOrigWeight || 1) * this.settings.sizeMult * this.settings.sizeMult
-        : node._onhOrigWeight;
-    } else if (node._onhSaved) {
-      node.color = node._onhOrigColor;
-      node.weight = node._onhOrigWeight;
-      delete node._onhSaved; delete node._onhOrigColor; delete node._onhOrigWeight;
+    if (!node._onhSaved) {
+      node._onhSaved = true;
+      node._onhOrigColor = node.color;
+      node._onhOrigWeight = node.weight;
     }
+    // 'linked-*' notes reuse the color of the note they're linked to; the
+    // reduced opacity that sets them apart is applied via worldAlpha
+    // (see patchNodeCircle), not here — node.color.a has no visible effect
+    // on the renderer, only its rgb component does.
+    const rgb = status === 'pinned' || status === 'linked-pinned' ? this._pinnedColorInt : this._colorInt;
+    // Only written when it differs, so a steady graph doesn't allocate a new
+    // color object per highlighted node per frame.
+    if (node.color?.rgb !== rgb || node.color.a !== 1) node.color = { a: 1, rgb };
+    // node.weight drives the node's physics body size and click target.
+    // Scale by sizeMult² so the physics body matches the visual size.
+    // Linked notes keep their original weight — only pinned/open are enlarged.
+    const weight = status === 'pinned' || status === 'open'
+      ? (node._onhOrigWeight || 1) * this.settings.sizeMult * this.settings.sizeMult
+      : node._onhOrigWeight;
+    if (node.weight !== weight) node.weight = weight;
   }
 
   // ── Renderer loop ──────────────────────────────────────────────────────────
@@ -894,6 +813,9 @@ class OpenNotesHighlight extends obsidian.Plugin {
   attachToRenderer(renderer) {
     const plugin = this;
     let frameId;
+    // While highlighting is off, one pass per update is enough to restore the
+    // nodes; after that the loop idles instead of walking every node each frame.
+    let restoredGen = -1;
     const loop = () => {
       // Stop looping once the renderer's graph leaf is gone (liveRenderers is
       // rebuilt on every update, and closing a leaf fires layout-change).
@@ -902,10 +824,16 @@ class OpenNotesHighlight extends obsidian.Plugin {
         plugin.patchedRenderers.delete(renderer);
         return;
       }
+      const enabled = plugin.settings.enabled;
       const nodes = renderer.nodes;
-      if (nodes) nodes.forEach(node => plugin.applyToNode(node));
+      if (nodes && (enabled || restoredGen !== plugin._gen)) {
+        nodes.forEach(node => plugin.applyToNode(node));
+        restoredGen = enabled ? -1 : plugin._gen;
+      }
+      // Edges only need patching while edge highlighting is on; lines patched
+      // earlier fall through to their original values when it is off.
       const links = renderer.links;
-      if (links) links.forEach(link => plugin.patchLinkLine(link));
+      if (links && enabled && plugin.settings.highlightEdges) links.forEach(link => plugin.patchLinkLine(link));
       frameId = requestAnimationFrame(loop);
     };
     frameId = requestAnimationFrame(loop);
@@ -1050,7 +978,7 @@ class OpenNotesHighlight extends obsidian.Plugin {
 
     let signature = null;
     const setOptions = (opts, current) => {
-      const next = opts.map(o => `${o.value}${o.label}`).join(' ');
+      const next = opts.map(o => `${o.value}\u0001${o.label}`).join('\u0000');
       if (next !== signature) {
         signature = next;
         select.empty();
@@ -1078,7 +1006,7 @@ class OpenNotesHighlight extends obsidian.Plugin {
     row.createSpan({ cls: 'onh-label', text: label });
     const input = row.createEl('input', { cls: 'onh-color', type: 'color' });
     input.value = value;
-    input.addEventListener('input', e => onSet(e.target.value));
+    input.addEventListener('input', e => { onSet(e.target.value); this.refreshColors(); });
     input.addEventListener('change', async e => { onSet(e.target.value); await this.saveSettings(); });
     return input;
   }
