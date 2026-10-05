@@ -2,6 +2,8 @@
 
 An [Obsidian](https://obsidian.md) plugin that visually highlights currently open notes in the graph view.
 
+> **About the code:** This plugin's code was written with [Claude](https://claude.ai) (Anthropic) and is curated by the author.
+
 ## Features
 
 - **Color highlight** — open notes appear in a custom color
