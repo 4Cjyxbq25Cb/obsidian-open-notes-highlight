@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.4.2
+
+Documentation release — no changes to the plugin's behavior.
+
+- **Transparency note:** the plugin description and the README now state that
+  the code was written with Claude (Anthropic) and is curated by the author.
+
+---
+
 ## 1.4.1
 
 Performance release — no changes to settings, defaults, or how highlighting looks.
