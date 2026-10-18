@@ -14,7 +14,7 @@ An [Obsidian](https://obsidian.md) plugin that visually highlights currently ope
 - **Workspace scope** (optional) — pick any saved workspace and highlight the notes *it* has open, without loading it and disturbing your current layout
 - **In-graph control panel** — adjust color, size, and opacity directly in the graph view without opening settings
 
-![Screenshot placeholder](screenshot.png)
+![Graph view with two open notes highlighted, their linked notes and edges tinted, and the in-graph control panel](https://raw.githubusercontent.com/4Cjyxbq25Cb/obsidian-open-notes-highlight/main/screenshot.png)
 
 ## Installation
 
